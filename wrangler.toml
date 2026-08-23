@@ -1,0 +1,16 @@
+# ==============================================================================
+# Cloudflare Workers / Pages Configuration (Wrangler)
+# PRIME WASH POS & ERP System
+# ==============================================================================
+
+name = "prime-wash-api"
+main = "src/server.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+NODE_ENV = "production"
+# Environment secrets (DATABASE_URL, ADMIN_PIN, JWT_SECRET, CLOUDINARY_*, etc.)
+# should be securely configured via:
+#   npx wrangler secret put DATABASE_URL
+#   npx wrangler secret put ADMIN_PIN

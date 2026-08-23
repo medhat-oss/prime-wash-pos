@@ -1,0 +1,192 @@
+### ============================================================================
+### Car Wash ERP & POS API - HTTP Requests Collection
+### Base URL: http://localhost:3000
+### ============================================================================
+
+@baseUrl = http://localhost:3000
+
+### 1. Health Check
+GET {{baseUrl}}/health
+
+### 2. Root API Info
+GET {{baseUrl}}/
+
+### ============================================================================
+### Dashboard Analytics
+### ============================================================================
+
+### Get Dashboard Statistics
+GET {{baseUrl}}/api/dashboard/stats
+
+### ============================================================================
+### Inventory Management (المخزون بالجرام)
+### ============================================================================
+
+### Get All Inventory Items
+GET {{baseUrl}}/api/inventory
+
+### Get Low Stock Items Only
+GET {{baseUrl}}/api/inventory?lowStock=true
+
+### Create New Inventory Item (Raw Material in Grams)
+POST {{baseUrl}}/api/inventory
+Content-Type: application/json
+
+{
+  "name": "شامبو حماية متقدم بلس",
+  "unit": "gram",
+  "current_stock_grams": 80000,
+  "reorder_threshold_grams": 8000,
+  "cost_per_gram": 0.020,
+  "notes": "توريد جديد برميل 80 كجم"
+}
+
+### Restock Inventory Item (Add Grams)
+# Replace {itemId} with actual UUID
+POST {{baseUrl}}/api/inventory/a0000000-0000-0000-0000-000000000001/restock
+Content-Type: application/json
+
+{
+  "grams": 25000,
+  "costPerGram": 0.015
+}
+
+### ============================================================================
+### Services & BOM Recipes (الخدمات ووصفات الجرامات)
+### ============================================================================
+
+### Get All Active Services with Recipes & Material Costs
+GET {{baseUrl}}/api/services?status=active
+
+### Get Single Service by ID
+GET {{baseUrl}}/api/services/b0000000-0000-0000-0000-000000000003
+
+### Create New Wash Service with BOM Recipes
+POST {{baseUrl}}/api/services
+Content-Type: application/json
+
+{
+  "name": "غسيل بخار ملكي داخلي وخارجي",
+  "price": 180.00,
+  "description": "غسيل بالبخار الحار مع تنظيف الفرش والتعقيم بالأوزون",
+  "category": "VIP بخار",
+  "status": "active",
+  "recipes": [
+    {
+      "inventory_item_id": "a0000000-0000-0000-0000-000000000001",
+      "quantity_grams": 150.00,
+      "notes": "صابون رغوي للبخار"
+    },
+    {
+      "inventory_item_id": "a0000000-0000-0000-0000-000000000004",
+      "quantity_grams": 40.00,
+      "notes": "تعطير مكثف"
+    }
+  ]
+}
+
+### Update Service Recipes (BOM)
+PUT {{baseUrl}}/api/services/b0000000-0000-0000-0000-000000000001/recipes
+Content-Type: application/json
+
+{
+  "recipes": [
+    {
+      "inventory_item_id": "a0000000-0000-0000-0000-000000000001",
+      "quantity_grams": 130.00,
+      "notes": "زيادة رغوة الصابون"
+    },
+    {
+      "inventory_item_id": "a0000000-0000-0000-0000-000000000003",
+      "quantity_grams": 35.00,
+      "notes": "تلميع الكفرات"
+    }
+  ]
+}
+
+### ============================================================================
+### POS & Orders (نقاط البيع والخصم الذري للمخزون)
+### ============================================================================
+
+### Create New POS Order (Deducts Grams from Inventory Atomically)
+POST {{baseUrl}}/api/pos/orders
+Content-Type: application/json
+
+{
+  "service_id": "b0000000-0000-0000-0000-000000000002",
+  "car_plate": "ر ق م 4321",
+  "car_type": "SUV - يوكن",
+  "customer_name": "مشعل الحربي",
+  "customer_phone": "0555554433",
+  "payment_method": "card",
+  "assigned_employee_id": "c0000000-0000-0000-0000-000000000002",
+  "notes": "غسيل سريع مع التركيز على تلميع الجنوط"
+}
+
+### Get Recent POS Orders
+GET {{baseUrl}}/api/pos/orders?limit=20
+
+### Get Single Order by ID
+GET {{baseUrl}}/api/pos/orders/d0000000-0000-0000-0000-000000000001
+
+### ============================================================================
+### HR & Real-time Payroll (الموظفين، الحضور، والحساب اللحظي)
+### ============================================================================
+
+### Get All Active Employees
+GET {{baseUrl}}/api/hr/employees?status=active
+
+### Record Attendance (Check-in & Check-out with Auto Overtime/Deduction Calculation)
+POST {{baseUrl}}/api/hr/attendance
+Content-Type: application/json
+
+{
+  "employee_id": "c0000000-0000-0000-0000-000000000002",
+  "work_date": "2026-08-18",
+  "check_in": "2026-08-18T08:00:00Z",
+  "check_out": "2026-08-18T17:30:00Z",
+  "notes": "حضور منتظم + ساعة ونصف إضافي"
+}
+
+### Get Attendance Records
+GET {{baseUrl}}/api/hr/attendance
+
+### Create Financial Transaction for Employee (Advance, Bonus, Deduction)
+POST {{baseUrl}}/api/hr/transactions
+Content-Type: application/json
+
+{
+  "employee_id": "c0000000-0000-0000-0000-000000000002",
+  "type": "bonus",
+  "amount": 120.00,
+  "notes": "مكافأة إنجاز غسيل VIP في وقت قياسي"
+}
+
+### Create Advance (سلفة)
+POST {{baseUrl}}/api/hr/transactions
+Content-Type: application/json
+
+{
+  "employee_id": "c0000000-0000-0000-0000-000000000002",
+  "type": "advance",
+  "amount": 250.00,
+  "notes": "سلفة مصاريف طارئة"
+}
+
+### Calculate Real-Time Payroll Preview for Employee
+GET {{baseUrl}}/api/hr/payroll/calculate/c0000000-0000-0000-0000-000000000002
+
+### Settle and Payout Payroll (Creates Payout Record & Settles Transactions Atomically)
+POST {{baseUrl}}/api/hr/payroll/payout
+Content-Type: application/json
+
+{
+  "employee_id": "c0000000-0000-0000-0000-000000000002",
+  "period_start": "2026-08-01",
+  "period_end": "2026-08-31",
+  "payment_method": "transfer",
+  "notes": "صرف راتب شهر أغسطس 2026 عبر تحويل بنكي"
+}
+
+### Get Payout History Archive
+GET {{baseUrl}}/api/hr/payroll/payouts

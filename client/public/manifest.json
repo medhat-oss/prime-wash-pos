@@ -1,0 +1,33 @@
+{
+  "name": "مغسلة السيارات الذكية | Car Wash ERP & POS",
+  "short_name": "المغسلة",
+  "description": "نظام إدارة نقاط البيع والمخزون والحسابات والرواتب لمغسلة السيارات",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f0f11",
+  "theme_color": "#bd0000",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
