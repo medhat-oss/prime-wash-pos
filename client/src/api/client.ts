@@ -60,6 +60,7 @@ import {
   saveStoredPayouts,
   createStoredPayout,
 } from '../utils/transactionStorage.js';
+import { compressImageFile } from '../utils/imageCompressor.js';
 import {
   getStoredAllOrders,
   getStoredShiftOrders,
@@ -1738,38 +1739,41 @@ export const uploadApi = {
         return res.data;
       }
     } catch {
-      console.warn('⚠️ [Media Upload Fallback]: Backend upload endpoint returned 405 or unavailable. Using client-side DataURL storage.');
+      console.warn('⚠️ [Media Upload Fallback]: Backend upload endpoint returned 405 or unavailable. Using client-side optimized DataURL storage.');
     }
 
-    // Client-side Base64 / DataURL fallback for static Cloudflare Pages hosting
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        const isVideo =
-          file.type.startsWith('video/') ||
-          file.name.endsWith('.mp4') ||
-          file.name.endsWith('.webm') ||
-          file.name.endsWith('.mov');
+    // Client-side Base64 / DataURL fallback with canvas compression for static Cloudflare Pages hosting
+    try {
+      const isVideo =
+        file.type.startsWith('video/') ||
+        file.name.endsWith('.mp4') ||
+        file.name.endsWith('.webm') ||
+        file.name.endsWith('.mov');
 
-        resolve({
-          success: true,
-          message: 'تم حفظ الوسائط بنجاح (تخزين محلي مباشر)',
-          data: {
-            url: dataUrl,
-            media_type: isVideo ? 'video' : 'image',
-            public_id: `local_${Date.now()}`,
-            filename: file.name,
-            size: file.size,
-            provider: 'local',
-          },
-        });
+      const dataUrl = isVideo
+        ? await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          })
+        : await compressImageFile(file, { maxWidth: 800, maxHeight: 800, quality: 0.75 });
+
+      return {
+        success: true,
+        message: 'تم حفظ الوسائط بنجاح (تخزين محلي مباشر ومضغوط)',
+        data: {
+          url: dataUrl,
+          media_type: isVideo ? 'video' : 'image',
+          public_id: `local_${Date.now()}`,
+          filename: file.name,
+          size: file.size,
+          provider: 'local',
+        },
       };
-      reader.onerror = () => {
-        reject(new Error('تعذر قراءة ملف الوسائط محلياً'));
-      };
-      reader.readAsDataURL(file);
-    });
+    } catch {
+      throw new Error('تعذر معالجة وضغط ملف الوسائط محلياً');
+    }
   },
 };
 

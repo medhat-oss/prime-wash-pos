@@ -22,7 +22,8 @@
     "db:cleanup-duplicates": "tsx src/scripts/cleanup-test-duplicates.ts",
     "test:api": "tsx src/scripts/test-api.ts",
     "test:sanity": "tsx test-e2e-sanity.ts",
-    "test:edge-cases": "tsx test-edge-cases.ts"
+    "test:edge-cases": "tsx test-edge-cases.ts",
+    "test:perf-thermal": "tsx test-performance-thermal.ts"
   },
   "keywords": [
     "car-wash",

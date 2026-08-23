@@ -19,6 +19,7 @@ import ClockInOutModal from '../../components/ClockInOutModal.js';
 import CashierLockModal from '../../components/CashierLockModal.js';
 import ShiftCloseModal from '../../components/ShiftCloseModal.js';
 import { EmptyState } from '../../components/ui/EmptyState.js';
+import { debounce } from '../../utils/eventBus.js';
 
 
 export const PosPage: React.FC = () => {
@@ -92,8 +93,19 @@ export const PosPage: React.FC = () => {
         setPosSettings(e.detail);
       }
     };
+
+    const debouncedFetch = debounce(fetchData, 150);
+
     window.addEventListener('pos-settings-updated', handleSettingsUpdated);
-    return () => window.removeEventListener('pos-settings-updated', handleSettingsUpdated);
+    window.addEventListener('cw_services_updated', debouncedFetch);
+    window.addEventListener('cw_attendance_updated', debouncedFetch);
+
+    return () => {
+      debouncedFetch.cancel();
+      window.removeEventListener('pos-settings-updated', handleSettingsUpdated);
+      window.removeEventListener('cw_services_updated', debouncedFetch);
+      window.removeEventListener('cw_attendance_updated', debouncedFetch);
+    };
   }, []);
 
   // Guarantee video autoplay on mount/change

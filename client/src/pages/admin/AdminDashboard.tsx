@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, Suspense, lazy } from 'react';
 import {
   LayoutDashboard,
   Package,
@@ -10,16 +10,45 @@ import {
   ShieldCheck,
   Palette,
   ChevronDown,
+  Loader2,
 } from 'lucide-react';
-import OverviewTab from './OverviewTab.js';
-import InventoryTab from './InventoryTab.js';
-import ServicesBomTab from './ServicesBomTab.js';
-import HrPayrollTab from './HrPayrollTab.js';
-import ActiveShiftTab from './ActiveShiftTab.js';
-import OrdersHistoryTab from './OrdersHistoryTab.js';
-import ExpensesTab from './ExpensesTab.js';
-import EtaSettingsTab from './EtaSettingsTab.js';
-import PosAppearanceTab from './PosAppearanceTab.js';
+
+// Lazy-loaded Admin Sub-Tabs for optimal code-splitting and faster initial loading
+const OverviewTab = lazy(() => import('./OverviewTab.js'));
+const InventoryTab = lazy(() => import('./InventoryTab.js'));
+const ServicesBomTab = lazy(() => import('./ServicesBomTab.js'));
+const PosAppearanceTab = lazy(() => import('./PosAppearanceTab.js'));
+const HrPayrollTab = lazy(() => import('./HrPayrollTab.js'));
+const ActiveShiftTab = lazy(() => import('./ActiveShiftTab.js'));
+const OrdersHistoryTab = lazy(() => import('./OrdersHistoryTab.js'));
+const ExpensesTab = lazy(() => import('./ExpensesTab.js'));
+const EtaSettingsTab = lazy(() => import('./EtaSettingsTab.js'));
+
+/**
+ * High-fidelity Tab Loading Skeleton with Dark Crimson aesthetic
+ */
+const TabLoadingSkeleton: React.FC = () => (
+  <div className="space-y-6 animate-pulse p-4 rounded-3xl border border-white/10 bg-slate-900/40 backdrop-blur-md">
+    <div className="flex items-center justify-between">
+      <div className="space-y-2">
+        <div className="h-6 w-48 rounded-xl bg-white/10" />
+        <div className="h-3 w-72 rounded-lg bg-white/5" />
+      </div>
+      <div className="h-9 w-32 rounded-xl bg-white/10" />
+    </div>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {[1, 2, 3, 4].map((i) => (
+        <div key={i} className="h-28 rounded-2xl bg-white/5 border border-white/5" />
+      ))}
+    </div>
+    <div className="h-64 rounded-3xl bg-white/5 border border-white/5 flex items-center justify-center">
+      <div className="flex items-center gap-2 text-xs font-bold text-slate-400">
+        <Loader2 className="w-5 h-5 animate-spin text-rose-500" />
+        <span>جاري تحميل التبويب...</span>
+      </div>
+    </div>
+  </div>
+);
 
 export const AdminDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('overview');
@@ -96,19 +125,21 @@ export const AdminDashboard: React.FC = () => {
         ))}
       </div>
 
-      {/* Active Tab Content View */}
+      {/* Active Tab Content View wrapped with Suspense */}
       <div className="animate-in fade-in duration-200">
-        {activeTab === 'overview' && (
-          <OverviewTab onNavigateTab={(targetTab) => setActiveTab(targetTab)} />
-        )}
-        {activeTab === 'inventory' && <InventoryTab />}
-        {activeTab === 'services' && <ServicesBomTab />}
-        {activeTab === 'pos_appearance' && <PosAppearanceTab />}
-        {activeTab === 'hr' && <HrPayrollTab />}
-        {activeTab === 'active_shift' && <ActiveShiftTab />}
-        {activeTab === 'orders' && <OrdersHistoryTab />}
-        {activeTab === 'expenses' && <ExpensesTab />}
-        {activeTab === 'eta' && <EtaSettingsTab />}
+        <Suspense fallback={<TabLoadingSkeleton />}>
+          {activeTab === 'overview' && (
+            <OverviewTab onNavigateTab={(targetTab) => setActiveTab(targetTab)} />
+          )}
+          {activeTab === 'inventory' && <InventoryTab />}
+          {activeTab === 'services' && <ServicesBomTab />}
+          {activeTab === 'pos_appearance' && <PosAppearanceTab />}
+          {activeTab === 'hr' && <HrPayrollTab />}
+          {activeTab === 'active_shift' && <ActiveShiftTab />}
+          {activeTab === 'orders' && <OrdersHistoryTab />}
+          {activeTab === 'expenses' && <ExpensesTab />}
+          {activeTab === 'eta' && <EtaSettingsTab />}
+        </Suspense>
       </div>
     </div>
   );

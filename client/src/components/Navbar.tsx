@@ -12,6 +12,7 @@ import {
   getActiveAttendedHeadcount,
   getCustomStoredEmployees,
 } from '../utils/attendanceStorage.js';
+import { debounce } from '../utils/eventBus.js';
 
 interface NavbarProps {
   activeTab: 'pos' | 'admin';
@@ -62,14 +63,16 @@ export const Navbar: React.FC<NavbarProps> = ({
     };
 
     updateHeadcount();
+    const debouncedUpdate = debounce(updateHeadcount, 100);
 
-    window.addEventListener('cw_attendance_updated', updateHeadcount);
-    window.addEventListener('storage', updateHeadcount);
+    window.addEventListener('cw_attendance_updated', debouncedUpdate);
+    window.addEventListener('storage', debouncedUpdate);
 
     return () => {
       clearInterval(interval);
-      window.removeEventListener('cw_attendance_updated', updateHeadcount);
-      window.removeEventListener('storage', updateHeadcount);
+      debouncedUpdate.cancel();
+      window.removeEventListener('cw_attendance_updated', debouncedUpdate);
+      window.removeEventListener('storage', debouncedUpdate);
     };
   }, []);
 

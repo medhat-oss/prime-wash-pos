@@ -36,6 +36,8 @@ import {
   exportMaterialConsumptionToPdf,
 } from '../../utils/reportExport.js';
 
+import { debounce } from '../../utils/eventBus.js';
+
 interface OverviewTabProps {
   onNavigateTab: (tab: string) => void;
 }
@@ -84,22 +86,25 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
       fetchStats();
     };
 
-    window.addEventListener('cw_attendance_updated', handleUpdates);
-    window.addEventListener('cw_inventory_updated', handleUpdates);
-    window.addEventListener('cw_expenses_updated', handleUpdates);
-    window.addEventListener('cw_services_updated', handleUpdates);
-    window.addEventListener('cw_transactions_updated', handleUpdates);
-    window.addEventListener('cw_payroll_updated', handleUpdates);
-    window.addEventListener('storage', handleUpdates);
+    const debouncedUpdates = debounce(handleUpdates, 150);
+
+    window.addEventListener('cw_attendance_updated', debouncedUpdates);
+    window.addEventListener('cw_inventory_updated', debouncedUpdates);
+    window.addEventListener('cw_expenses_updated', debouncedUpdates);
+    window.addEventListener('cw_services_updated', debouncedUpdates);
+    window.addEventListener('cw_transactions_updated', debouncedUpdates);
+    window.addEventListener('cw_payroll_updated', debouncedUpdates);
+    window.addEventListener('storage', debouncedUpdates);
 
     return () => {
-      window.removeEventListener('cw_attendance_updated', handleUpdates);
-      window.removeEventListener('cw_inventory_updated', handleUpdates);
-      window.removeEventListener('cw_expenses_updated', handleUpdates);
-      window.removeEventListener('cw_services_updated', handleUpdates);
-      window.removeEventListener('cw_transactions_updated', handleUpdates);
-      window.removeEventListener('cw_payroll_updated', handleUpdates);
-      window.removeEventListener('storage', handleUpdates);
+      debouncedUpdates.cancel();
+      window.removeEventListener('cw_attendance_updated', debouncedUpdates);
+      window.removeEventListener('cw_inventory_updated', debouncedUpdates);
+      window.removeEventListener('cw_expenses_updated', debouncedUpdates);
+      window.removeEventListener('cw_services_updated', debouncedUpdates);
+      window.removeEventListener('cw_transactions_updated', debouncedUpdates);
+      window.removeEventListener('cw_payroll_updated', debouncedUpdates);
+      window.removeEventListener('storage', debouncedUpdates);
     };
   }, []);
 
