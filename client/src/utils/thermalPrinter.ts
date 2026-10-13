@@ -5,7 +5,41 @@
  */
 
 import { Order } from '../types/index.js';
-import { formatEGP, formatDateTime } from './formatters.js';
+import { formatEGP, formatDateTime, escapeHtml, getPaymentMethodLabel } from './formatters.js';
+import { getStoredTaxSettings } from './taxStorage.js';
+import QRCode from 'qrcode';
+
+/**
+ * Pure client-side in-memory QR code SVG generator.
+ * Generates high-contrast vector SVG markup synchronously with zero network dependencies.
+ */
+export const generateReceiptQrSvg = (text: string, size: number = 85): string => {
+  try {
+    const qr = QRCode.create(text, { errorCorrectionLevel: 'M' });
+    const moduleCount = qr.modules.size;
+    const margin = 1;
+    const totalCells = moduleCount + margin * 2;
+
+    let path = '';
+    for (let r = 0; r < moduleCount; r++) {
+      for (let c = 0; c < moduleCount; c++) {
+        if (qr.modules.get(r, c)) {
+          const x = c + margin;
+          const y = r + margin;
+          path += `M${x},${y}h1v1h-1z `;
+        }
+      }
+    }
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalCells} ${totalCells}" width="${size}" height="${size}" shape-rendering="crispEdges" style="display: block; margin: 0 auto; background: #FFF;">
+      <rect width="100%" height="100%" fill="#ffffff"/>
+      <path d="${path.trim()}" fill="#000000"/>
+    </svg>`;
+  } catch (err) {
+    console.warn('[thermalPrinter] QR code generation error:', err);
+    return `<div style="font-size: 8px; border: 1px dashed #000; padding: 4px; text-align: center; margin: 4px auto; width: ${size}px;">${escapeHtml(text)}</div>`;
+  }
+};
 
 export interface ThermalPrintOptions {
   paperWidth?: '80mm' | '58mm';
@@ -25,7 +59,7 @@ const DEFAULT_OPTIONS: ThermalPrintOptions = {
   shopName: 'مغسلة برايم واش (PRIME WASH)',
   shopSubtitle: 'خدمات غسيل وتلميع وحماية المركبات الذكية',
   shopPhone: '01000000000',
-  taxNumber: '100-234-567',
+  taxNumber: '123-456-789',
   cutPaper: true,
   openDrawer: false,
   showQrCode: true,
@@ -39,23 +73,19 @@ export const buildThermalReceiptHtml = (
   order: Order,
   options: ThermalPrintOptions = {}
 ): string => {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const taxSettings = getStoredTaxSettings();
+  const taxNumber = options.taxNumber || taxSettings.tax_registration_number || DEFAULT_OPTIONS.taxNumber;
+  const shopName = options.shopName || taxSettings.company_name || DEFAULT_OPTIONS.shopName;
+  const opts = { ...DEFAULT_OPTIONS, ...options, taxNumber, shopName };
   const is58mm = opts.paperWidth === '58mm';
   const widthMm = is58mm ? '58mm' : '80mm';
   const contentWidth = is58mm ? '48mm' : '72mm';
-
-  const paymentLabels: Record<string, string> = {
-    cash: 'نقدي (كاش)',
-    card: 'بطاقة ائتمان / فيزا (Card)',
-    transfer: 'محفظة إلكترونية / تحويل بنكي',
-    split: 'دفع مجزأ',
-  };
 
   const qrValue =
     order.eta_share_url ||
     (order.eta_uuid
       ? `https://invoicing.eta.gov.eg/receipts/search/${order.eta_uuid}`
-      : `PRIME-WASH-POS-ORDER:${order.order_code}`);
+      : `PRIME-WASH:${order.order_code}|TOTAL:${Number(order.total_amount).toFixed(2)}|VAT:${Number(order.tax_amount || 0).toFixed(2)}|DATE:${(order.created_at || new Date().toISOString()).slice(0, 10)}`);
 
   return `<!DOCTYPE html>
 <html dir="rtl" lang="ar">
@@ -167,10 +197,10 @@ export const buildThermalReceiptHtml = (
 <body>
   <!-- Header -->
   <div class="text-center">
-    <div class="header-title">${opts.shopName}</div>
-    <div class="header-subtitle">${opts.shopSubtitle}</div>
-    <div style="font-size: 9px; margin-top: 2px;">س.ت / ر.ض: ${opts.taxNumber}</div>
-    ${opts.shopPhone ? `<div style="font-size: 9px;">هاتف: ${opts.shopPhone}</div>` : ''}
+    <div class="header-title">${escapeHtml(opts.shopName)}</div>
+    <div class="header-subtitle">${escapeHtml(opts.shopSubtitle)}</div>
+    <div style="font-size: 9px; margin-top: 2px;">س.ت / ر.ض: ${escapeHtml(opts.taxNumber)}</div>
+    ${opts.shopPhone ? `<div style="font-size: 9px;">هاتف: ${escapeHtml(opts.shopPhone)}</div>` : ''}
   </div>
 
   <div class="double-divider"></div>
@@ -178,7 +208,7 @@ export const buildThermalReceiptHtml = (
   <!-- Order & Vehicle Details -->
   <div class="row">
     <span>رقم الإيصال:</span>
-    <span class="font-bold">${order.order_code}</span>
+    <span class="font-bold">${escapeHtml(order.order_code)}</span>
   </div>
   <div class="row">
     <span>التاريخ والوقت:</span>
@@ -187,22 +217,22 @@ export const buildThermalReceiptHtml = (
   ${order.car_plate ? `
   <div class="row" style="margin: 4px 0;">
     <span>رقم اللوحة:</span>
-    <span class="badge">${order.car_plate}</span>
+    <span class="badge">${escapeHtml(order.car_plate)}</span>
   </div>` : ''}
   ${order.car_type ? `
   <div class="row">
     <span>نوع المركبة:</span>
-    <span>${order.car_type}</span>
+    <span>${escapeHtml(order.car_type)}</span>
   </div>` : ''}
   ${order.customer_name ? `
   <div class="row">
     <span>العميل:</span>
-    <span>${order.customer_name}</span>
+    <span>${escapeHtml(order.customer_name)}</span>
   </div>` : ''}
   ${order.assigned_employee_name ? `
   <div class="row">
     <span>الفني المسؤول:</span>
-    <span>${order.assigned_employee_name}</span>
+    <span>${escapeHtml(order.assigned_employee_name)}</span>
   </div>` : ''}
 
   <div class="divider"></div>
@@ -218,8 +248,8 @@ export const buildThermalReceiptHtml = (
     <tbody>
       <tr>
         <td>
-          <div class="font-bold">${order.service_name || 'خدمة غسيل سيارة'}</div>
-          ${order.service_egs_code ? `<div style="font-size: 8px; color: #555;">كود: ${order.service_egs_code}</div>` : ''}
+          <div class="font-bold">${escapeHtml(order.service_name || 'خدمة غسيل سيارة')}</div>
+          ${order.service_egs_code ? `<div style="font-size: 8px; color: #555;">كود: ${escapeHtml(order.service_egs_code)}</div>` : ''}
         </td>
         <td class="text-left font-bold">${formatEGP(order.total_amount)}</td>
       </tr>
@@ -229,6 +259,7 @@ export const buildThermalReceiptHtml = (
   <div class="divider"></div>
 
   <!-- Financial Breakdown -->
+  ${order.tax_amount && order.tax_amount > 0 ? `
   <div class="row">
     <span>المبلغ قبل الضريبة:</span>
     <span>${formatEGP(order.subtotal)}</span>
@@ -236,7 +267,15 @@ export const buildThermalReceiptHtml = (
   <div class="row">
     <span>ضريبة القيمة المضافة T1 (14%):</span>
     <span>${formatEGP(order.tax_amount)}</span>
+  </div>` : `
+  <div class="row">
+    <span>المبلغ الأساسي:</span>
+    <span>${formatEGP(order.subtotal || order.total_amount)}</span>
   </div>
+  <div class="row" style="font-size: 9px; color: #555;">
+    <span>الضريبة:</span>
+    <span>معفى من ضريبة القيمة المضافة</span>
+  </div>`}
 
   <div class="total-banner">
     الإجمالي: ${formatEGP(order.total_amount)}
@@ -244,7 +283,7 @@ export const buildThermalReceiptHtml = (
 
   <div class="row" style="font-size: 10px;">
     <span>طريقة السداد:</span>
-    <span class="font-bold">${paymentLabels[order.payment_method] || order.payment_method}</span>
+    <span class="font-bold">${escapeHtml(getPaymentMethodLabel(order.payment_method))}</span>
   </div>
 
   <!-- ETA Approval Badge if present -->
@@ -252,21 +291,21 @@ export const buildThermalReceiptHtml = (
   <div class="divider"></div>
   <div style="font-size: 8.5px; text-align: center; background: #F0FDF4; border: 1px solid #16A34A; padding: 3px; border-radius: 4px; margin: 4px 0;">
     <div class="font-bold" style="color: #15803D;">إيصال معتمد بمصلحة الضرائب المصرية (ETA)</div>
-    <div style="font-family: monospace; word-break: break-all; margin-top: 1px;">UUID: ${order.eta_uuid}</div>
+    <div style="font-family: monospace; word-break: break-all; margin-top: 1px;">UUID: ${escapeHtml(order.eta_uuid)}</div>
   </div>` : ''}
 
-  <!-- QR Code Section -->
+  <!-- QR Code Section (100% Client-Side In-Memory Vector SVG) -->
   ${opts.showQrCode ? `
   <div class="qr-container">
-    <img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(qrValue)}" alt="QR Code" width="80" height="80" style="display: block; margin: 0 auto;" />
-    <div style="font-size: 8px; color: #555; margin-top: 2px;">امسح الرمز للتحقق من الفاتورة الإلكترونية</div>
+    ${generateReceiptQrSvg(qrValue, is58mm ? 70 : 85)}
+    <div style="font-size: 8px; color: #555; margin-top: 3px;">امسح الرمز للتحقق من الفاتورة الإلكترونية</div>
   </div>` : ''}
 
   <div class="divider"></div>
 
   <!-- Footer -->
   <div class="footer-note">
-    ${opts.thankYouNote}
+    ${escapeHtml(opts.thankYouNote)}
   </div>
   <div class="text-center" style="font-size: 8px; color: #777; margin-top: 4px;">
     نظام برايم واش الذكي • POS LIVE

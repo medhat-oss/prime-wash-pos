@@ -28,3 +28,12 @@ const shutdown = async () => {
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+process.on('unhandledRejection', (reason: any) => {
+  console.error('💥 Unhandled Rejection at:', reason);
+});
+
+process.on('uncaughtException', (err: Error) => {
+  console.error('💥 Uncaught Exception thrown:', err);
+  shutdown();
+});

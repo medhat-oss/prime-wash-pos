@@ -87,14 +87,18 @@ export class ReceiptBuilderService {
     // Format date to ISO UTC format required by ETA (e.g. 2026-08-18T17:30:00Z)
     const issuedDate = new Date(order.created_at || Date.now()).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
+    const cleanTax = taxRegNumber.replace(/\D/g, '').padEnd(9, '0').slice(0, 9);
     // EGS Code resolution (fallback to standardized EG-{TaxID}-WASH01 if not set)
     const egsCode =
       order.service_egs_code?.trim() ||
-      `EG-${taxRegNumber.replace(/\D/g, '').padEnd(9, '0').slice(0, 9)}-WASH01`;
+      `EG-${cleanTax}-WASH01`;
 
-    const subtotal = Number(Number(order.subtotal || 0).toFixed(2));
-    const taxAmount = Number(Number(order.tax_amount || 0).toFixed(2));
     const totalAmount = Number(Number(order.total_amount || 0).toFixed(2));
+    const subtotal =
+      order.subtotal != null && order.tax_amount != null && Number((Number(order.subtotal) + Number(order.tax_amount)).toFixed(2)) === totalAmount
+        ? Number(Number(order.subtotal).toFixed(2))
+        : Number((totalAmount / 1.14).toFixed(2));
+    const taxAmount = Number((totalAmount - subtotal).toFixed(2));
 
     // Map Payment method: 'C' = Cash, 'V' = Visa/Card, 'O' = Other (Transfer/Mobile Wallet)
     let paymentCode: 'C' | 'V' | 'O' = 'C';

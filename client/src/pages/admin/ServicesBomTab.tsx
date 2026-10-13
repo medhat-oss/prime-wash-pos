@@ -1,41 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import {
-  Layers,
-  Plus,
-  Edit2,
-  Trash2,
-  Droplets,
-  Scale,
-  RefreshCw,
-  PlusCircle,
-  X,
-  CheckCircle2,
-  Film,
-  Image as ImageIcon,
-  Video,
-  Eye,
-  Play,
-  UploadCloud,
-  Loader2,
-  Link2,
-} from 'lucide-react';
 import { servicesApi, inventoryApi, uploadApi } from '../../api/client.js';
 import { Service, InventoryItem, RecipeItem } from '../../types/index.js';
-import { FALLBACK_SERVICES, FALLBACK_INVENTORY } from '../../api/mockFallbacks.js';
+import { getStoredServices } from '../../utils/serviceStorage.js';
+import { getStoredInventory } from '../../utils/inventoryStorage.js';
 import { useToast } from '../../components/Toast.js';
 import Modal from '../../components/Modal.js';
+import ConfirmModal from '../../components/ConfirmModal.js';
 import { formatEGP, resolveMediaUrl } from '../../utils/formatters.js';
-import { EmptyState } from '../../components/ui/EmptyState.js';
+import { EmptyState, CardGridSkeleton, ErrorState } from '../../components/ui/index.js';
 
 export const ServicesBomTab: React.FC = () => {
   const toast = useToast();
-  const [services, setServices] = useState<Service[]>(FALLBACK_SERVICES);
-  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>(FALLBACK_INVENTORY);
+  const [services, setServices] = useState<Service[]>(() => getStoredServices());
+  const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>(() => getStoredInventory());
   const [loading, setLoading] = useState(true);
 
   // Unified Service & BOM Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
+  const [serviceToDelete, setServiceToDelete] = useState<Service | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Form State
   const [serviceForm, setServiceForm] = useState({
@@ -91,15 +75,15 @@ export const ServicesBomTab: React.FC = () => {
     try {
       setLoading(true);
       const [servicesData, inventoryData] = await Promise.all([
-        servicesApi.getAll().catch(() => FALLBACK_SERVICES),
-        inventoryApi.getAll().catch(() => FALLBACK_INVENTORY),
+        servicesApi.getAll(undefined, true).catch(() => getStoredServices()),
+        inventoryApi.getAll(false, true).catch(() => getStoredInventory()),
       ]);
-      setServices(Array.isArray(servicesData) && servicesData.length > 0 ? servicesData : FALLBACK_SERVICES);
-      setInventoryItems(Array.isArray(inventoryData) && inventoryData.length > 0 ? inventoryData : FALLBACK_INVENTORY);
+      setServices(Array.isArray(servicesData) ? servicesData : getStoredServices());
+      setInventoryItems(Array.isArray(inventoryData) ? inventoryData : getStoredInventory());
     } catch (err: any) {
       toast.error(err.message, 'تعذر تحميل الخدمات');
-      setServices(FALLBACK_SERVICES);
-      setInventoryItems(FALLBACK_INVENTORY);
+      setServices(getStoredServices());
+      setInventoryItems(getStoredInventory());
     } finally {
       setLoading(false);
     }
@@ -240,14 +224,18 @@ export const ServicesBomTab: React.FC = () => {
     }
   };
 
-  const handleDeleteService = async (id: string, name: string) => {
-    if (!window.confirm(`هل أنت متأكد من حذف باقة (${name})؟`)) return;
+  const handleConfirmDelete = async () => {
+    if (!serviceToDelete) return;
     try {
-      await servicesApi.delete(id);
-      toast.success('تم حذف الخدمة بنجاح');
+      setIsDeleting(true);
+      await servicesApi.delete(serviceToDelete.id);
+      toast.success(`تم حذف باقة (${serviceToDelete.name}) بنجاح`);
+      setServiceToDelete(null);
       fetchData();
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(err.message || 'تعذر حذف الباقة');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -256,9 +244,8 @@ export const ServicesBomTab: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <Layers className="w-5 h-5" style={{ color: 'var(--color-primary)' }} />
-            <span>باقات الغسيل والمكونات بالجرام (Services & BOM Recipes)</span>
+          <h2 className="text-xl font-black text-white">
+            باقات الغسيل والمكونات بالجرام (Services & BOM Recipes)
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
             تحديد أسعار الغسيل بالجنيه وربط المواد الخام (صابون، واكس، معطر) بالجرام لكل سيارة
@@ -268,30 +255,31 @@ export const ServicesBomTab: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             onClick={handleOpenAddModal}
-            className="flex items-center gap-1.5 px-4 py-2.5 text-white rounded-xl text-xs font-bold transition-all shadow-lg hover:brightness-110"
+            className="px-4 py-2.5 text-white rounded-xl text-xs font-bold transition-all shadow-lg hover:brightness-110"
             style={{
               backgroundColor: 'var(--color-primary)',
             }}
           >
-            <Plus className="w-4 h-4" />
-            <span>إضافة باقة غسيل جديدة</span>
+            إضافة باقة غسيل جديدة
           </button>
 
           <button
             onClick={fetchData}
-            className="p-2.5 border text-slate-300 rounded-xl text-xs transition-all backdrop-blur-md hover:bg-white/5"
+            className="px-3 py-2 border text-slate-300 rounded-xl text-xs font-bold transition-all backdrop-blur-md hover:bg-white/5"
             style={{
               backgroundColor: 'var(--card-bg)',
               borderColor: 'var(--border-color)',
             }}
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} style={{ color: 'var(--color-primary)' }} />
+            {loading ? 'جاري التحميل...' : 'تحديث'}
           </button>
         </div>
       </div>
 
       {/* Services Grid */}
-      {services.length > 0 ? (
+      {loading ? (
+        <CardGridSkeleton count={6} columns={3} />
+      ) : services.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {services.map((service) => (
 
@@ -317,18 +305,8 @@ export const ServicesBomTab: React.FC = () => {
                     {service.category || 'عام'}
                   </span>
                   {service.media_type && service.media_type !== 'none' && service.media_url && (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20 flex items-center gap-1">
-                      {service.media_type === 'video' ? (
-                        <>
-                          <Film className="w-3 h-3" />
-                          <span>فيديو خلفية</span>
-                        </>
-                      ) : (
-                        <>
-                          <ImageIcon className="w-3 h-3" />
-                          <span>صورة خلفية</span>
-                        </>
-                      )}
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                      {service.media_type === 'video' ? 'فيديو خلفية' : 'صورة خلفية'}
                     </span>
                   )}
                   {service.egs_code ? (
@@ -364,9 +342,8 @@ export const ServicesBomTab: React.FC = () => {
               {/* BOM List */}
               <div className="mt-3 pt-3 border-t" style={{ borderColor: 'var(--border-color)' }}>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
-                    <Scale className="w-3.5 h-3.5" style={{ color: 'var(--color-primary)' }} />
-                    <span>استهلاك الجرامات (BOM):</span>
+                  <span className="text-xs font-bold text-slate-300">
+                    استهلاك الجرامات (BOM):
                   </span>
                   <button
                     onClick={() => handleOpenEditModal(service)}
@@ -390,9 +367,8 @@ export const ServicesBomTab: React.FC = () => {
                         key={i}
                         className="flex items-center justify-between text-[11px] text-slate-300"
                       >
-                        <span className="flex items-center gap-1">
-                          <Droplets className="w-3 h-3" style={{ color: 'var(--color-primary)' }} />
-                          <span>{r.inventory_name || 'مادة'}:</span>
+                        <span>
+                          {r.inventory_name || 'مادة'}:
                         </span>
                         <span className="font-mono font-bold" style={{ color: 'var(--color-primary)' }}>
                           {r.quantity_grams} g
@@ -427,21 +403,21 @@ export const ServicesBomTab: React.FC = () => {
                 <button
                   onClick={() => handleOpenEditModal(service)}
                   title="تعديل الباقة والوصفة"
-                  className="p-2 border text-slate-300 rounded-xl transition-colors hover:bg-white/10"
+                  className="px-2.5 py-1 text-xs font-bold border text-slate-300 rounded-xl transition-colors hover:bg-white/10"
                   style={{
                     backgroundColor: 'rgba(255, 255, 255, 0.05)',
                     borderColor: 'var(--border-color)',
                   }}
                 >
-                  <Edit2 className="w-3.5 h-3.5" />
+                  تعديل
                 </button>
 
                 <button
-                  onClick={() => handleDeleteService(service.id, service.name)}
+                  onClick={() => setServiceToDelete(service)}
                   title="حذف الخدمة"
-                  className="p-2 bg-rose-950/40 hover:bg-rose-900 border border-rose-500/30 text-rose-400 rounded-xl transition-colors"
+                  className="px-2.5 py-1 text-xs font-bold bg-rose-950/40 hover:bg-rose-900 border border-rose-500/30 text-rose-400 rounded-xl transition-colors"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  حذف
                 </button>
               </div>
             </div>
@@ -450,7 +426,6 @@ export const ServicesBomTab: React.FC = () => {
       </div>
     ) : (
       <EmptyState
-        icon={<Layers className="w-8 h-8 opacity-80" />}
         title="لا توجد باقات غسيل مسجلة"
         description="قم بإضافة باقات الغسيل وتحديد أسعارها والمواد الخام المستهلكة بالجرام لكل سيارة"
         actionLabel="إضافة باقة غسيل جديدة"
@@ -473,9 +448,8 @@ export const ServicesBomTab: React.FC = () => {
         <form onSubmit={handleSaveUnifiedService} className="space-y-5">
           {/* Section 1: Basic Service Information */}
           <div className="space-y-3">
-            <div className="flex items-center gap-2 text-xs font-bold border-b pb-2" style={{ color: 'var(--color-primary)', borderColor: 'var(--border-color)' }}>
-              <Layers className="w-4 h-4" />
-              <span>1. البيانات الأساسية للخدمة</span>
+            <div className="text-xs font-bold border-b pb-2" style={{ color: 'var(--color-primary)', borderColor: 'var(--border-color)' }}>
+              1. البيانات الأساسية للخدمة
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -601,16 +575,15 @@ export const ServicesBomTab: React.FC = () => {
 
           {/* Section 2: Visual Media & Dynamic Background (Media/Banner) */}
           <div className="space-y-3 pt-2">
-            <div className="flex items-center gap-2 text-xs font-bold border-b pb-2" style={{ color: 'var(--color-primary)', borderColor: 'var(--border-color)' }}>
-              <Film className="w-4 h-4" />
-              <span>2. الوسائط المرئية للباقة (Media / Banner)</span>
+            <div className="text-xs font-bold border-b pb-2" style={{ color: 'var(--color-primary)', borderColor: 'var(--border-color)' }}>
+              2. الوسائط المرئية للباقة (Media / Banner)
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
                 type="button"
                 onClick={() => setServiceForm({ ...serviceForm, media_type: 'none' })}
-                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
+                className={`flex items-center justify-center py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
                   serviceForm.media_type === 'none'
                     ? 'text-white'
                     : 'text-slate-400 hover:bg-white/5'
@@ -620,12 +593,12 @@ export const ServicesBomTab: React.FC = () => {
                   borderColor: 'var(--border-color)',
                 }}
               >
-                <span>بدون وسائط</span>
+                بدون وسائط
               </button>
               <button
                 type="button"
                 onClick={() => setServiceForm({ ...serviceForm, media_type: 'image' })}
-                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
+                className={`flex items-center justify-center py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
                   serviceForm.media_type === 'image'
                     ? 'bg-purple-500/20 text-purple-300 border-purple-500 ring-1 ring-purple-500/30'
                     : 'text-slate-400 hover:bg-white/5'
@@ -635,13 +608,12 @@ export const ServicesBomTab: React.FC = () => {
                   borderColor: serviceForm.media_type === 'image' ? undefined : 'var(--border-color)',
                 }}
               >
-                <ImageIcon className="w-3.5 h-3.5" />
-                <span>صورة (Image)</span>
+                صورة (Image)
               </button>
               <button
                 type="button"
                 onClick={() => setServiceForm({ ...serviceForm, media_type: 'video' })}
-                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
+                className={`flex items-center justify-center py-2 px-3 rounded-xl border text-xs font-bold transition-all ${
                   serviceForm.media_type === 'video'
                     ? 'bg-sky-500/20 text-sky-300 border-sky-500 ring-1 ring-sky-500/30'
                     : 'text-slate-400 hover:bg-white/5'
@@ -651,8 +623,7 @@ export const ServicesBomTab: React.FC = () => {
                   borderColor: serviceForm.media_type === 'video' ? undefined : 'var(--border-color)',
                 }}
               >
-                <Video className="w-3.5 h-3.5" />
-                <span>فيديو (MP4/WebM Loop)</span>
+                فيديو (MP4/WebM Loop)
               </button>
             </div>
 
@@ -692,27 +663,16 @@ export const ServicesBomTab: React.FC = () => {
                 >
                   {uploadingMedia ? (
                     <div className="flex items-center gap-2 py-2 text-xs font-bold" style={{ color: 'var(--color-primary)' }}>
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin inline-block" />
                       <span>جاري رفع وسائط الباقة وحفظها...</span>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-3">
-                      <div
-                        className="w-9 h-9 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform"
-                        style={{
-                          backgroundColor: 'rgba(255, 255, 255, 0.08)',
-                          color: 'var(--color-primary)',
-                        }}
-                      >
-                        <UploadCloud className="w-5 h-5" />
+                    <div className="text-center">
+                      <div className="text-xs font-bold text-slate-200 mb-1">
+                        اضغط لاختيار فيديو أو صورة من جهازك، أو اسحب الملف هنا
                       </div>
-                      <div className="text-right">
-                        <div className="text-xs font-bold text-slate-200">
-                          اضغط لاختيار فيديو أو صورة من جهازك، أو اسحب الملف هنا
-                        </div>
-                        <div className="text-[10px] text-slate-400">
-                          يدعم MP4, WebM, JPG, PNG, WebP (بحد أقصى 50MB)
-                        </div>
+                      <div className="text-[10px] text-slate-400">
+                        يدعم MP4, WebM, JPG, PNG, WebP (بحد أقصى 50MB)
                       </div>
                     </div>
                   )}
@@ -723,15 +683,13 @@ export const ServicesBomTab: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setShowManualUrl(!showManualUrl)}
-                    className="hover:underline flex items-center gap-1 font-bold"
+                    className="hover:underline font-bold"
                     style={{ color: 'var(--color-primary)' }}
                   >
-                    <Link2 className="w-3.5 h-3.5" />
-                    <span>{showManualUrl ? 'إخفاء حقل الرابط' : 'أو إدخال رابط خارجي يدوياً'}</span>
+                    {showManualUrl ? 'إخفاء حقل الرابط' : 'أو إدخال رابط خارجي يدوياً'}
                   </button>
                   {serviceForm.media_url && (
-                    <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" />
+                    <span className="text-[10px] text-emerald-400 font-mono">
                       تم تعيين الرابط بنجاح
                     </span>
                   )}
@@ -765,9 +723,8 @@ export const ServicesBomTab: React.FC = () => {
                 {/* Live Preview Box */}
                 {serviceForm.media_url.trim() && (
                   <div className="space-y-1.5 pt-2">
-                    <div className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5">
-                      <Eye className="w-3.5 h-3.5" style={{ color: 'var(--color-primary)' }} />
-                      <span>معاينة فورية لكارت الغسيل (Live Preview):</span>
+                    <div className="text-[11px] font-bold text-slate-400">
+                      معاينة فورية لكارت الغسيل (Live Preview):
                     </div>
                     <div
                       className="relative h-40 w-full rounded-2xl overflow-hidden border flex items-center justify-center shadow-lg group"
@@ -845,9 +802,8 @@ export const ServicesBomTab: React.FC = () => {
           {/* Section 3: Integrated BOM Materials Recipe */}
           <div className="space-y-3 pt-2">
             <div className="flex items-center justify-between border-b pb-2" style={{ borderColor: 'var(--border-color)' }}>
-              <div className="flex items-center gap-2 text-xs font-bold" style={{ color: 'var(--color-primary)' }}>
-                <Scale className="w-4 h-4" />
-                <span>3. تحديد استهلاك المواد الخام بالجرام (BOM Recipe)</span>
+              <div className="text-xs font-bold" style={{ color: 'var(--color-primary)' }}>
+                3. تحديد استهلاك المواد الخام بالجرام (BOM Recipe)
               </div>
 
               <button
@@ -862,15 +818,14 @@ export const ServicesBomTab: React.FC = () => {
                     },
                   ])
                 }
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all border hover:brightness-110"
+                className="px-2.5 py-1 rounded-lg text-xs font-bold transition-all border hover:brightness-110"
                 style={{
                   backgroundColor: 'rgba(255, 255, 255, 0.08)',
                   borderColor: 'var(--border-color)',
                   color: 'var(--color-primary)',
                 }}
               >
-                <PlusCircle className="w-3.5 h-3.5" />
-                <span>إضافة مادة</span>
+                إضافة مادة
               </button>
             </div>
 
@@ -944,9 +899,9 @@ export const ServicesBomTab: React.FC = () => {
                         const updated = recipeRows.filter((_, i) => i !== index);
                         setRecipeRows(updated);
                       }}
-                      className="p-1.5 text-slate-500 hover:text-rose-400 rounded-lg hover:bg-white/5"
+                      className="px-2 py-1 text-xs text-slate-400 hover:text-rose-400 rounded-lg hover:bg-white/5"
                     >
-                      <X className="w-4 h-4" />
+                      حذف
                     </button>
                   </div>
                 ))
@@ -980,17 +935,29 @@ export const ServicesBomTab: React.FC = () => {
             <button
               type="submit"
               disabled={submitting}
-              className="px-6 py-2.5 text-white rounded-xl text-xs font-bold shadow-lg disabled:opacity-50 flex items-center gap-1.5 hover:brightness-110 transition-all"
+              className="px-6 py-2.5 text-white rounded-xl text-xs font-bold shadow-lg disabled:opacity-50 hover:brightness-110 transition-all"
               style={{
                 backgroundColor: 'var(--color-primary)',
               }}
             >
-              <CheckCircle2 className="w-4 h-4" />
-              <span>{submitting ? 'جاري الحفظ...' : 'حفظ الباقة والوصفة معاً'}</span>
+              {submitting ? 'جاري الحفظ...' : 'حفظ الباقة والوصفة معاً'}
             </button>
           </div>
         </form>
       </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={!!serviceToDelete}
+        onClose={() => {
+          if (!isDeleting) setServiceToDelete(null);
+        }}
+        onConfirm={handleConfirmDelete}
+        title="تأكيد حذف باقة الغسيل"
+        message={`هل أنت متأكد من رغبتك في حذف باقة (${serviceToDelete?.name || ''}) نهائياً؟ سيتم إلغاء ربط مكونات الوصفة المرتبطة بها.`}
+        confirmLabel="نعم، حذف الباقة"
+        isLoading={isDeleting}
+      />
     </div>
   );
 };

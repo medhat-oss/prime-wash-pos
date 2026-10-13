@@ -34,18 +34,19 @@ export const getStoredServices = (status?: 'active' | 'inactive'): Service[] => 
     return status ? FALLBACK_SERVICES.filter((s) => s.status === status) : FALLBACK_SERVICES;
   }
 
-  let list: Service[] = [];
+  let list: Service[] | null = null;
   try {
     const raw = localStorage.getItem(SERVICES_KEY);
-    if (raw) {
+    if (raw !== null) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         list = parsed;
       }
     }
   } catch {}
 
-  if (list.length === 0) {
+  // Only seed with FALLBACK_SERVICES on first run when the storage key is completely missing
+  if (list === null) {
     list = FALLBACK_SERVICES;
     try {
       localStorage.setItem(SERVICES_KEY, JSON.stringify(FALLBACK_SERVICES));
@@ -117,7 +118,7 @@ export const createStoredService = (
   const estimatedCost = calculateServiceEstimatedCost(formattedRecipes, inventory);
 
   const newService: Service = {
-    id: `srv-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    id: data.id || `srv-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
     name: data.name || 'باقة غسيل جديدة',
     price: Number(data.price) || 100.0,
     description: data.description || '',
@@ -128,11 +129,11 @@ export const createStoredService = (
     status: data.status || 'active',
     recipes: formattedRecipes,
     estimated_material_cost: estimatedCost,
-    created_at: new Date().toISOString(),
+    created_at: data.created_at || new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
 
-  const updated = [newService, ...current];
+  const updated = [newService, ...current.filter((s) => s.id !== newService.id)];
   saveStoredServices(updated);
   return newService;
 };
@@ -189,14 +190,14 @@ export const updateStoredService = (
 };
 
 /**
- * Delete a service package
+ * Delete a service package by ID or name
  */
-export const deleteStoredService = (id: string): boolean => {
+export const deleteStoredService = (idOrName: string): boolean => {
+  if (typeof window === 'undefined') return false;
   const current = getStoredServices();
-  const exists = current.some((s) => s.id === id);
-  if (!exists) return false;
-
-  const filtered = current.filter((s) => s.id !== id);
+  const filtered = current.filter(
+    (s) => s.id !== idOrName && s.name !== idOrName && (s as any).temp_id !== idOrName
+  );
   saveStoredServices(filtered);
   return true;
 };
@@ -207,3 +208,41 @@ export const deleteStoredService = (id: string): boolean => {
 export const setStoredServiceRecipes = (id: string, recipes: RecipeItem[]): Service => {
   return updateStoredService(id, { recipes });
 };
+
+/**
+ * Purge any test ghost services and legacy storage keys
+ */
+export const purgeGhostServices = (): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    // Remove deprecated storage keys
+    localStorage.removeItem('cw_services');
+    localStorage.removeItem('pos_services');
+    localStorage.removeItem('services_cache');
+
+    const raw = localStorage.getItem(SERVICES_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const cleaned = parsed.filter(
+          (s: any) =>
+            s &&
+            s.name &&
+            !s.name.includes('متاتن') &&
+            !s.name.includes('شيشيشيشيشي') &&
+            s.status !== 'deleted' &&
+            s.status !== 'inactive'
+        );
+        if (cleaned.length !== parsed.length) {
+          localStorage.setItem(SERVICES_KEY, JSON.stringify(cleaned));
+          window.dispatchEvent(new CustomEvent('cw_services_updated', { detail: cleaned }));
+        }
+      }
+    }
+  } catch {}
+};
+
+// Auto-purge on load
+if (typeof window !== 'undefined') {
+  purgeGhostServices();
+}

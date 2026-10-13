@@ -1,32 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import {
-  DollarSign,
-  Car,
-  AlertTriangle,
-  Users,
-  TrendingUp,
-  RefreshCw,
-  Clock,
-  ArrowUpRight,
-  Droplets,
-  FileSpreadsheet,
-  FileText,
-  Download,
-  Calendar,
-  ShieldCheck,
-  Boxes,
-  Eye,
-  X,
-  Layers,
-  CheckCircle2,
-} from 'lucide-react';
-import { dashboardApi } from '../../api/client.js';
+import { dashboardApi, hrApi } from '../../api/client.js';
 import { DashboardStats, MonthlyVatReport, MaterialConsumptionReport } from '../../types/index.js';
-import { FALLBACK_DASHBOARD_STATS } from '../../api/mockFallbacks.js';
+import { createZeroDashboardStats } from '../../api/mockFallbacks.js';
 import { useToast } from '../../components/Toast.js';
 import { formatEGP } from '../../utils/formatters.js';
-import { EmptyState } from '../../components/ui/EmptyState.js';
-import { getActiveAttendedHeadcount, getCustomStoredEmployees } from '../../utils/attendanceStorage.js';
+import { EmptyState, CardGridSkeleton, ErrorState } from '../../components/ui/index.js';
+import {
+  getActiveAttendedHeadcount,
+  getCustomStoredEmployees,
+  getTodayDateStr,
+  isOwnerEmployee,
+} from '../../utils/attendanceStorage.js';
 import { getStoredAllOrders } from '../../utils/orderStorage.js';
 import { getStoredInventory } from '../../utils/inventoryStorage.js';
 import {
@@ -44,7 +28,7 @@ interface OverviewTabProps {
 
 export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
   const toast = useToast();
-  const [stats, setStats] = useState<DashboardStats>(FALLBACK_DASHBOARD_STATS);
+  const [stats, setStats] = useState<DashboardStats>(createZeroDashboardStats);
   const [loading, setLoading] = useState(true);
 
   // Month & Year Filter for Reports
@@ -63,30 +47,39 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
   const [previewMatModal, setPreviewMatModal] = useState<MaterialConsumptionReport | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
 
-  const fetchStats = async () => {
+  const fetchStats = async (isSilent = false) => {
     try {
-      setLoading(true);
-      const data = await dashboardApi.getStats().catch(() => FALLBACK_DASHBOARD_STATS);
-      setStats(data || FALLBACK_DASHBOARD_STATS);
+      if (!isSilent) {
+        setLoading(true);
+      }
+      const [data] = await Promise.all([
+        dashboardApi.getStats(!isSilent).catch(() => createZeroDashboardStats()),
+        hrApi.getTodayAttendanceStatus(!isSilent).catch(() => null),
+      ]);
+      setStats(data || createZeroDashboardStats());
     } catch (err: any) {
-      toast.error(err.message, 'تعذر تحميل الإحصائيات');
-      setStats(FALLBACK_DASHBOARD_STATS);
+      if (!isSilent) {
+        toast.error(err.message, 'تعذر تحميل الإحصائيات');
+      }
+      setStats((prev) => (prev && prev.today && prev.today.today_orders_count > 0 ? prev : createZeroDashboardStats()));
     } finally {
-      setLoading(false);
+      if (!isSilent) {
+        setLoading(false);
+      }
     }
   };
 
   const [attendanceVersion, setAttendanceVersion] = useState(0);
 
   useEffect(() => {
-    fetchStats();
+    fetchStats(false);
 
     const handleUpdates = () => {
       setAttendanceVersion((v) => v + 1);
-      fetchStats();
+      fetchStats(true);
     };
 
-    const debouncedUpdates = debounce(handleUpdates, 150);
+    const debouncedUpdates = debounce(handleUpdates, 600);
 
     window.addEventListener('cw_attendance_updated', debouncedUpdates);
     window.addEventListener('cw_inventory_updated', debouncedUpdates);
@@ -94,6 +87,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
     window.addEventListener('cw_services_updated', debouncedUpdates);
     window.addEventListener('cw_transactions_updated', debouncedUpdates);
     window.addEventListener('cw_payroll_updated', debouncedUpdates);
+    window.addEventListener('cw_shifts_updated', debouncedUpdates);
+    window.addEventListener('cw_orders_updated', debouncedUpdates);
     window.addEventListener('storage', debouncedUpdates);
 
     return () => {
@@ -104,6 +99,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
       window.removeEventListener('cw_services_updated', debouncedUpdates);
       window.removeEventListener('cw_transactions_updated', debouncedUpdates);
       window.removeEventListener('cw_payroll_updated', debouncedUpdates);
+      window.removeEventListener('cw_shifts_updated', debouncedUpdates);
+      window.removeEventListener('cw_orders_updated', debouncedUpdates);
       window.removeEventListener('storage', debouncedUpdates);
     };
   }, []);
@@ -120,7 +117,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
         await exportVatReportToExcel(reportData);
         toast.success(`تم تصدير ملف إكسيل لإقرار ضريبة القيمة المضافة 14% لشهر (${reportData.period}) بنجاح`);
       } else {
-        exportVatReportToPdf(reportData);
+        await exportVatReportToPdf(reportData);
         toast.success(`تم إنشاء ملف PDF لإقرار ضريبة القيمة المضافة 14% لشهر (${reportData.period}) بنجاح`);
       }
     } catch (err: any) {
@@ -142,7 +139,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
         await exportMaterialConsumptionToExcel(reportData);
         toast.success(`تم تصدير سجل استهلاك المواد الخام إكسيل لشهر (${reportData.period}) بنجاح`);
       } else {
-        exportMaterialConsumptionToPdf(reportData);
+        await exportMaterialConsumptionToPdf(reportData);
         toast.success(`تم إنشاء ملف PDF لسجل استهلاك المواد الخام لشهر (${reportData.period}) بنجاح`);
       }
     } catch (err: any) {
@@ -178,22 +175,16 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
     }
   };
 
-  if (loading || !stats) {
-    return (
-      <div className="space-y-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="h-32 bg-slate-900/60 rounded-2xl border border-slate-800 animate-pulse" />
-          ))}
-        </div>
-      </div>
-    );
-  }
+
 
   // Real-time dynamic KPI metrics
-  const todayDateStr = new Date().toISOString().slice(0, 10);
+  const todayDateStr = getTodayDateStr();
   const storedAll = getStoredAllOrders().filter(
-    (o) => o.created_at && o.created_at.slice(0, 10) === todayDateStr && o.status !== 'cancelled'
+    (o) =>
+      o.created_at &&
+      (getTodayDateStr(new Date(o.created_at)) === todayDateStr ||
+        o.created_at.slice(0, 10) === todayDateStr) &&
+      o.status !== 'cancelled'
   );
   const dynamicTodayRev = storedAll.reduce((sum, o) => sum + (Number(o.total_amount) || 0), 0);
   const dynamicOrdersCount = storedAll.length;
@@ -207,8 +198,14 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
   const lowStockCount = stats.inventory.low_stock_count > 0 ? stats.inventory.low_stock_count : dynamicLowStock;
 
   const customEmployees = getCustomStoredEmployees();
-  const activeStaff = (customEmployees && customEmployees.length > 0) ? customEmployees.length : (stats.hr.active_employees_count || 5);
-  const attendedStaff = getActiveAttendedHeadcount(customEmployees);
+  const operationalStaff = customEmployees.filter((e) => !isOwnerEmployee(e));
+  const activeStaff = operationalStaff.length > 0 ? operationalStaff.length : Math.max(1, (stats.hr?.active_employees_count || 4));
+  const localAttended = getActiveAttendedHeadcount(operationalStaff);
+  const serverAttended = Number(stats?.hr?.attended_today_count || 0);
+  const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+  const attendedStaff = (isOnline && stats?.hr?.attended_today_count !== undefined)
+    ? serverAttended
+    : localAttended;
 
 
 
@@ -238,20 +235,25 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
           </p>
         </div>
         <button
-          onClick={fetchStats}
+          onClick={() => fetchStats(false)}
           className="flex items-center gap-1.5 px-3.5 py-2 border text-slate-300 rounded-xl text-xs font-semibold transition-all backdrop-blur-md self-start sm:self-auto hover:bg-white/5"
           style={{
             backgroundColor: 'var(--card-bg)',
             borderColor: 'var(--border-color)',
           }}
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} style={{ color: 'var(--color-primary)' }} />
+          {loading && (
+            <span className="w-3 h-3 rounded-full border-2 border-primary border-t-transparent animate-spin ml-1" />
+          )}
           <span>تحديث البيانات</span>
         </button>
       </div>
 
       {/* KPI Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {loading ? (
+        <CardGridSkeleton count={4} columns={4} />
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Today's Revenue */}
         <div
           className="border p-5 rounded-3xl shadow-xl relative overflow-hidden backdrop-blur-md transition-all duration-300 hover:scale-[1.01]"
@@ -264,22 +266,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
             <span className="text-xs font-bold" style={{ color: 'var(--color-primary)' }}>
               إيرادات اليوم
             </span>
-            <div
-              className="w-10 h-10 rounded-2xl flex items-center justify-center border shadow-inner"
-              style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.06)',
-                borderColor: 'var(--border-color)',
-                color: 'var(--color-primary)',
-              }}
-            >
-              <DollarSign className="w-5 h-5" />
-            </div>
           </div>
           <div className="font-mono text-3xl font-black text-white">
             {formatEGP(todayRevenue)}
           </div>
-          <div className="text-[11px] text-slate-400 mt-2 flex items-center gap-1">
-            <TrendingUp className="w-3.5 h-3.5" style={{ color: 'var(--color-accent)' }} />
+          <div className="text-[11px] text-slate-400 mt-2">
             <span>إجمالي المبيعات المكتملة لليوم</span>
           </div>
         </div>
@@ -296,16 +287,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
             <span className="text-xs font-bold" style={{ color: 'var(--color-primary)' }}>
               السيارات المغسولة
             </span>
-            <div
-              className="w-10 h-10 rounded-2xl flex items-center justify-center border shadow-inner"
-              style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.06)',
-                borderColor: 'var(--border-color)',
-                color: 'var(--color-primary)',
-              }}
-            >
-              <Car className="w-5 h-5" />
-            </div>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-3xl font-black text-white">{todayWashes}</span>
@@ -332,21 +313,13 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
             <span className={`text-xs font-bold ${lowStockCount > 0 ? 'text-rose-400' : 'text-slate-400'}`}>
               نواقص المخزون (بالجرام)
             </span>
-            <div
-              className={`w-10 h-10 rounded-2xl flex items-center justify-center border shadow-inner ${
-                lowStockCount > 0 ? 'bg-rose-500/10 text-rose-400 border-rose-500/30' : 'text-slate-400 border-slate-800'
-              }`}
-            >
-              <AlertTriangle className="w-5 h-5" />
-            </div>
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="text-3xl font-black text-white">{lowStockCount}</span>
             <span className="text-xs text-slate-400">مواد أوشكت على النفاد</span>
           </div>
-          <div className="text-[11px] text-rose-400/90 mt-2 flex items-center gap-1 font-semibold">
-            <span>انقر لإعادة التوريد السريع</span>
-            <ArrowUpRight className="w-3 h-3" />
+          <div className="text-[11px] text-rose-400/90 mt-2 font-semibold">
+            <span>انقر لإعادة التوريد السريع &larr;</span>
           </div>
         </div>
 
@@ -363,54 +336,68 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
             <span className="text-xs font-bold text-emerald-400">
               الموظفين والشفتات
             </span>
-            <div
-              className="w-10 h-10 rounded-2xl flex items-center justify-center border shadow-inner bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-            >
-              <Users className="w-5 h-5" />
-            </div>
           </div>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-black text-white">{attendedStaff}</span>
             <span className="text-sm font-semibold text-slate-200">
-              حاضر من <span className="text-white font-black">{activeStaff}</span> موظف
+              حاضر من <span className="text-white font-black">{activeStaff}</span> عمال تشغيل
             </span>
           </div>
           <div className="text-xs text-slate-300 mt-2 flex items-center justify-between font-medium">
             <span>إدارة الحضور وشفتات العمل</span>
-            <ArrowUpRight className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="text-emerald-400 font-bold">&larr;</span>
           </div>
         </div>
       </div>
+      )}
 
 
       {/* Low Stock Warning Banner if any */}
-      {lowStockCount > 0 && (
-        <div className="p-4 rounded-2xl bg-rose-950/30 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
-              <AlertTriangle className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="text-xs font-bold text-rose-200">
-                تنبيه عاجل: المواد التالية بلغت حد إعادة الطلب الأدنى!
+      {(() => {
+        const depletedList = currentInv.filter(
+          (i) => i.is_low_stock || Number(i.current_stock_grams) <= Number(i.reorder_threshold_grams)
+        );
+        const count = Math.max(lowStockCount, depletedList.length);
+        if (count === 0) return null;
+
+        return (
+          <div className="p-4 sm:p-5 rounded-3xl bg-gradient-to-r from-rose-950/50 via-red-900/30 to-neutral-900/80 border border-rose-500/50 shadow-2xl backdrop-blur-md flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-start sm:items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 shrink-0 text-xl shadow-inner animate-pulse">
+                ⚠️
               </div>
-              <div className="text-[11px] text-rose-400 mt-0.5 flex flex-wrap gap-2">
-                {stats.inventory.low_stock_items.map((item) => (
-                  <span key={item.id} className="bg-rose-950/80 px-2 py-0.5 rounded border border-rose-800 font-mono">
-                    {item.name}: المتبقي ({item.current_stock_grams} جرام)
+              <div>
+                <div className="text-sm font-black text-rose-200 flex items-center gap-2">
+                  <span>إنذار نفاد المخزون (BOM):</span>
+                  <span className="bg-rose-500/30 text-rose-300 text-xs px-2 py-0.5 rounded-full border border-rose-500/40">
+                    {count} مواد تحت حد الأمان
                   </span>
-                ))}
+                </div>
+                <div className="text-xs text-rose-300/90 mt-1.5 flex flex-wrap gap-2">
+                  {depletedList.map((item) => (
+                    <span
+                      key={item.id}
+                      className="bg-rose-950/90 text-rose-200 px-2.5 py-1 rounded-xl border border-rose-700/60 font-mono text-[11px] flex items-center gap-1.5 shadow-sm"
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-ping" />
+                      <span className="font-sans font-bold text-slate-100">{item.name}:</span>
+                      <span className="text-rose-300 font-bold">{Number(item.current_stock_grams).toLocaleString()} جم</span>
+                      <span className="text-rose-400/70 text-[10px]">(حد الأمان: {Number(item.reorder_threshold_grams).toLocaleString()} جم)</span>
+                    </span>
+                  ))}
+                </div>
               </div>
             </div>
+            <button
+              onClick={() => onNavigateTab('inventory')}
+              className="px-4 py-2.5 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white rounded-2xl text-xs font-black whitespace-nowrap transition-all shadow-lg shadow-rose-950/50 cursor-pointer flex items-center justify-center gap-2 self-start sm:self-auto hover:scale-105 active:scale-95 shrink-0"
+            >
+              <span>📦 توريد المخزن الآن</span>
+              <span className="font-mono">&larr;</span>
+            </button>
           </div>
-          <button
-            onClick={() => onNavigateTab('inventory')}
-            className="px-3.5 py-1.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl text-xs font-bold whitespace-nowrap transition-colors"
-          >
-            توريد المخزن الآن
-          </button>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ===================================================================== */}
       {/* SECTION: Tax Compliance & Raw Material Reports Export (ExcelJS & jsPDF) */}
@@ -424,9 +411,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
       >
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b" style={{ borderColor: 'var(--border-color)' }}>
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-inner">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
             <div>
               <h3 className="text-base font-black text-white flex items-center gap-2">
                 <span>التقارير الضريبية واستهلاك المخزون (Compliance & Material Exports)</span>
@@ -438,15 +422,24 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
           </div>
 
           {/* Month / Year Period Selector */}
-          <div className="flex items-center gap-2 bg-slate-950/60 p-1.5 rounded-2xl border border-slate-800/80 self-start lg:self-auto">
+          <div
+            className="flex items-center gap-2 p-1.5 rounded-2xl border self-start lg:self-auto"
+            style={{
+              backgroundColor: 'rgba(0, 0, 0, 0.4)',
+              borderColor: 'var(--border-color)',
+            }}
+          >
             <div className="flex items-center gap-1 text-xs text-slate-400 px-2 font-semibold">
-              <Calendar className="w-3.5 h-3.5 text-slate-500" />
               <span>فترة التقرير:</span>
             </div>
             <select
               value={selectedMonth}
               onChange={(e) => setSelectedMonth(Number(e.target.value))}
-              className="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-1.5 font-bold outline-none focus:border-emerald-500"
+              className="border text-slate-200 text-xs rounded-xl px-2.5 py-1.5 font-bold outline-none cursor-pointer"
+              style={{
+                backgroundColor: 'rgba(24, 24, 27, 0.8)',
+                borderColor: 'var(--border-color)',
+              }}
             >
               {monthNames.map((name, idx) => (
                 <option key={idx + 1} value={idx + 1}>
@@ -457,7 +450,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
             <select
               value={selectedYear}
               onChange={(e) => setSelectedYear(Number(e.target.value))}
-              className="bg-slate-900 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-1.5 font-mono font-bold outline-none focus:border-emerald-500"
+              className="border text-slate-200 text-xs rounded-xl px-2.5 py-1.5 font-mono font-bold outline-none cursor-pointer"
+              style={{
+                backgroundColor: 'rgba(24, 24, 27, 0.8)',
+                borderColor: 'var(--border-color)',
+              }}
             >
               {[currentDate.getFullYear() - 1, currentDate.getFullYear(), currentDate.getFullYear() + 1].map((y) => (
                 <option key={y} value={y}>
@@ -471,20 +468,21 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
         {/* Two Report Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {/* Report 1: Monthly VAT 14% Declaration Summary */}
-          <div className="p-5 rounded-2xl bg-gradient-to-br from-slate-900/90 to-slate-950/90 border border-emerald-500/20 space-y-4 hover:border-emerald-500/40 transition-all shadow-lg">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                  <FileSpreadsheet className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-slate-100">إقرار ضريبة القيمة المضافة 14% الشهري</h4>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Monthly VAT 14% Declaration Summary & Audit Logs
-                  </p>
-                </div>
+          <div
+            className="p-5 rounded-2xl border space-y-4 transition-all shadow-lg"
+            style={{
+              backgroundColor: 'rgba(24, 24, 27, 0.75)',
+              borderColor: 'var(--border-color)',
+            }}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-bold text-white">إقرار ضريبة القيمة المضافة 14% الشهري</h4>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Monthly VAT 14% Declaration Summary & Audit Logs
+                </p>
               </div>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border border-red-950/80 bg-red-950/40 text-red-300 shrink-0">
                 14% VAT
               </span>
             </div>
@@ -493,54 +491,53 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
               تقرير محاسبي وضريبي متكامل يتضمن وعاء الضريبة (Taxable Base)، إجمالي ضريبة 14%، تفصيل الفواتير حسب الخدمات وطرق الدفع، وتأكيد مطابقة الإيصال الإلكتروني.
             </p>
 
-            <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80 flex-wrap">
-              <button
-                type="button"
-                onClick={() => handleExportVat('excel')}
-                disabled={exportingVatExcel}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-600/20 transition-all"
-              >
-                <Download className={`w-3.5 h-3.5 ${exportingVatExcel ? 'animate-spin' : ''}`} />
-                <span>{exportingVatExcel ? 'جارٍ التصدير...' : 'تصدير إكسيل (.xlsx)'}</span>
-              </button>
-
+            <div className="flex items-center gap-2 pt-2 border-t flex-wrap" style={{ borderColor: 'var(--border-color)' }}>
               <button
                 type="button"
                 onClick={() => handleExportVat('pdf')}
                 disabled={exportingVatPdf}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-600/20 transition-all"
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-red-700 hover:bg-red-600 active:bg-red-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md shadow-red-950/40 transition-all cursor-pointer"
               >
-                <FileText className={`w-3.5 h-3.5 ${exportingVatPdf ? 'animate-spin' : ''}`} />
                 <span>{exportingVatPdf ? 'جارٍ الإنشاء...' : 'تصدير PDF'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleExportVat('excel')}
+                disabled={exportingVatExcel}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-neutral-800 hover:bg-neutral-700 active:bg-neutral-900 border border-neutral-700 text-neutral-200 rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+              >
+                <span>{exportingVatExcel ? 'جارٍ التصدير...' : 'تصدير إكسيل (.xlsx)'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={handlePreviewVat}
                 disabled={loadingPreview}
-                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold border border-slate-700 transition-all"
+                className="px-3 py-2.5 bg-neutral-900/60 hover:bg-neutral-800 text-neutral-300 rounded-xl text-xs font-bold border border-neutral-800 transition-all cursor-pointer disabled:opacity-50"
                 title="معاينة سريعة"
               >
-                <Eye className="w-4 h-4" />
+                <span>معاينة</span>
               </button>
             </div>
           </div>
 
           {/* Report 2: Raw Material Consumption Logs */}
-          <div className="p-5 rounded-2xl bg-gradient-to-br from-slate-900/90 to-slate-950/90 border border-sky-500/20 space-y-4 hover:border-sky-500/40 transition-all shadow-lg">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
-                  <Boxes className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-bold text-slate-100">سجل استهلاك المواد الخام (بالجرام)</h4>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Raw Material Consumption & BOM Cost Analysis
-                  </p>
-                </div>
+          <div
+            className="p-5 rounded-2xl border space-y-4 transition-all shadow-lg"
+            style={{
+              backgroundColor: 'rgba(24, 24, 27, 0.75)',
+              borderColor: 'var(--border-color)',
+            }}
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h4 className="text-sm font-bold text-white">سجل استهلاك المواد الخام (بالجرام)</h4>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Raw Material Consumption & BOM Cost Analysis
+                </p>
               </div>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30">
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border border-red-950/80 bg-red-950/40 text-red-300 shrink-0">
                 BOM in Grams
               </span>
             </div>
@@ -549,35 +546,33 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
               تقرير تشغيلي لحركة المخزون يوضح إجمالي الجرامات المستهلكة من كل مادة خام (شامبو، فوم، واكس...) وتكلفتها الإجمالية، وتفصيل استهلاك كل غسلة مسجلة.
             </p>
 
-            <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80 flex-wrap">
-              <button
-                type="button"
-                onClick={() => handleExportMaterial('excel')}
-                disabled={exportingMatExcel}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md shadow-teal-600/20 transition-all"
-              >
-                <Download className={`w-3.5 h-3.5 ${exportingMatExcel ? 'animate-spin' : ''}`} />
-                <span>{exportingMatExcel ? 'جارٍ التصدير...' : 'تصدير إكسيل (.xlsx)'}</span>
-              </button>
-
+            <div className="flex items-center gap-2 pt-2 border-t flex-wrap" style={{ borderColor: 'var(--border-color)' }}>
               <button
                 type="button"
                 onClick={() => handleExportMaterial('pdf')}
                 disabled={exportingMatPdf}
-                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md shadow-indigo-600/20 transition-all"
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-red-700 hover:bg-red-600 active:bg-red-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-md shadow-red-950/40 transition-all cursor-pointer"
               >
-                <FileText className={`w-3.5 h-3.5 ${exportingMatPdf ? 'animate-spin' : ''}`} />
                 <span>{exportingMatPdf ? 'جارٍ الإنشاء...' : 'تصدير PDF'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleExportMaterial('excel')}
+                disabled={exportingMatExcel}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-neutral-800 hover:bg-neutral-700 active:bg-neutral-900 border border-neutral-700 text-neutral-200 rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+              >
+                <span>{exportingMatExcel ? 'جارٍ التصدير...' : 'تصدير إكسيل (.xlsx)'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={handlePreviewMaterial}
                 disabled={loadingPreview}
-                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold border border-slate-700 transition-all"
+                className="px-3 py-2.5 bg-neutral-900/60 hover:bg-neutral-800 text-neutral-300 rounded-xl text-xs font-bold border border-neutral-800 transition-all cursor-pointer disabled:opacity-50"
                 title="معاينة سريعة"
               >
-                <Eye className="w-4 h-4" />
+                <span>معاينة</span>
               </button>
             </div>
           </div>
@@ -596,16 +591,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
       >
         <div className="flex items-center justify-between pb-3 border-b" style={{ borderColor: 'var(--border-color)' }}>
           <div className="flex items-center gap-3">
-            <div
-              className="w-10 h-10 rounded-2xl border flex items-center justify-center shadow-inner"
-              style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.06)',
-                borderColor: 'var(--border-color)',
-                color: 'var(--color-primary)',
-              }}
-            >
-              <Users className="w-5 h-5" />
-            </div>
             <div>
               <h3 className="text-base font-black text-white flex items-center gap-2">
                 <span>سجل مبيعات الكاشير والموظفين (Cashier & Staff Sales Performance)</span>
@@ -678,7 +663,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
           }}
         >
           <h3 className="font-bold text-sm text-slate-100 mb-4 flex items-center gap-2">
-            <Droplets className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
             <span>الخدمات الأكثر طلباً</span>
           </h3>
           <div className="space-y-3">
@@ -731,7 +715,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
         >
           <div className="flex items-center justify-between mb-4">
             <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
-              <Clock className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
               <span>آخر الفواتير والعمليات</span>
             </h3>
             <button
@@ -787,7 +770,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
                     <td colSpan={5} className="py-6">
                       <EmptyState
                         compact
-                        icon={<Clock className="w-5 h-5 opacity-70" />}
                         title="لا توجد فواتير حديثة"
                         description="تظهر هنا الفواتير الصادرة حديثاً من الكاشير"
                       />
@@ -805,13 +787,16 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
       {/* Modal: Quick Preview VAT Declaration */}
       {/* ===================================================================== */}
       {previewVatModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full p-6 space-y-6 shadow-2xl animate-scaleUp max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div
+            className="border rounded-3xl max-w-2xl w-full p-6 space-y-6 shadow-2xl animate-scaleUp max-h-[90vh] overflow-y-auto"
+            style={{
+              backgroundColor: '#18181b',
+              borderColor: 'var(--border-color)',
+            }}
+          >
+            <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: 'var(--border-color)' }}>
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
-                  <ShieldCheck className="w-5 h-5" />
-                </div>
                 <div>
                   <h3 className="text-base font-bold text-white">معاينة إقرار القيمة المضافة 14%</h3>
                   <p className="text-xs text-slate-400">الفترة الضريبية: {previewVatModal.period}</p>
@@ -819,45 +804,45 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
               </div>
               <button
                 onClick={() => setPreviewVatModal(null)}
-                className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                className="px-3 py-1 rounded-xl text-slate-400 hover:text-white hover:bg-neutral-800 transition-colors text-xs font-bold cursor-pointer"
               >
-                <X className="w-5 h-5" />
+                إغلاق
               </button>
             </div>
 
             {/* Metrics */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800">
+              <div className="bg-neutral-950 p-3.5 rounded-2xl border border-neutral-800">
                 <div className="text-[11px] text-slate-400">إجمالي المبيعات (شامل الضريبة)</div>
                 <div className="text-lg font-black text-white font-mono mt-1">
                   {formatEGP(previewVatModal.summary.total_sales_gross)}
                 </div>
               </div>
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800">
+              <div className="bg-neutral-950 p-3.5 rounded-2xl border border-neutral-800">
                 <div className="text-[11px] text-slate-400">الصافي الخاضع (100/114)</div>
-                <div className="text-lg font-black text-sky-400 font-mono mt-1">
+                <div className="text-lg font-black text-slate-200 font-mono mt-1">
                   {formatEGP(previewVatModal.summary.total_taxable_base)}
                 </div>
               </div>
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-emerald-500/30 bg-emerald-950/10">
-                <div className="text-[11px] text-emerald-400 font-bold">ضريبة 14% المستحقة</div>
-                <div className="text-lg font-black text-emerald-400 font-mono mt-1">
+              <div className="bg-red-950/20 p-3.5 rounded-2xl border border-red-950/60">
+                <div className="text-[11px] text-red-400 font-bold">ضريبة 14% المستحقة</div>
+                <div className="text-lg font-black text-red-400 font-mono mt-1">
                   {formatEGP(previewVatModal.summary.total_vat_14)}
                 </div>
               </div>
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800">
+              <div className="bg-neutral-950 p-3.5 rounded-2xl border border-neutral-800">
                 <div className="text-[11px] text-slate-400">إجمالي الفواتير المصدرة</div>
                 <div className="text-lg font-black text-white font-mono mt-1">
                   {previewVatModal.summary.total_orders_count} فاتورة
                 </div>
               </div>
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800">
+              <div className="bg-neutral-950 p-3.5 rounded-2xl border border-neutral-800">
                 <div className="text-[11px] text-slate-400">معتمدة بـ ETA</div>
-                <div className="text-lg font-black text-teal-400 font-mono mt-1">
+                <div className="text-lg font-black text-slate-200 font-mono mt-1">
                   {previewVatModal.summary.eta_valid_count}
                 </div>
               </div>
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800">
+              <div className="bg-neutral-950 p-3.5 rounded-2xl border border-neutral-800">
                 <div className="text-[11px] text-slate-400">الرقم الضريبي</div>
                 <div className="text-xs font-bold text-slate-200 font-mono mt-2 truncate">
                   {previewVatModal.tax_registration_number}
@@ -870,11 +855,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
               <h4 className="text-xs font-bold text-slate-300">مبيعات الخدمات خلال الفترة:</h4>
               <div className="space-y-1.5 max-h-40 overflow-y-auto">
                 {previewVatModal.service_breakdown.map((s) => (
-                  <div key={s.id} className="flex items-center justify-between p-2 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                  <div key={s.id} className="flex items-center justify-between p-2 rounded-xl bg-neutral-950 border border-neutral-800 text-xs">
                     <span className="text-slate-200 font-medium">{s.name} ({s.orders_count} غسلة)</span>
                     <div className="flex items-center gap-3 font-mono">
                       <span className="text-slate-400">صافي: {formatEGP(s.total_net)}</span>
-                      <span className="text-emerald-400 font-bold">ضريبة: {formatEGP(s.total_vat)}</span>
+                      <span className="text-red-400 font-bold">ضريبة: {formatEGP(s.total_vat)}</span>
                     </div>
                   </div>
                 ))}
@@ -882,21 +867,20 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
             </div>
 
             {/* Actions */}
-            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
+            <div className="flex items-center justify-end gap-3 pt-4 border-t" style={{ borderColor: 'var(--border-color)' }}>
               <button
                 onClick={() => setPreviewVatModal(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold"
+                className="px-4 py-2 bg-neutral-900/60 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 rounded-xl text-xs font-bold cursor-pointer transition-colors"
               >
                 إغلاق
               </button>
               <button
-                onClick={() => {
-                  exportVatReportToPdf(previewVatModal);
+                onClick={async () => {
+                  await exportVatReportToPdf(previewVatModal);
                   toast.success('تم تحميل ملف PDF');
                 }}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5"
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md shadow-red-950/40 transition-all"
               >
-                <FileText className="w-3.5 h-3.5" />
                 <span>تحميل PDF</span>
               </button>
               <button
@@ -904,9 +888,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
                   await exportVatReportToExcel(previewVatModal);
                   toast.success('تم تحميل ملف Excel');
                 }}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5"
+                className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all"
               >
-                <Download className="w-3.5 h-3.5" />
                 <span>تحميل Excel</span>
               </button>
             </div>
@@ -918,13 +901,16 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
       {/* Modal: Quick Preview Raw Material Consumption */}
       {/* ===================================================================== */}
       {previewMatModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full p-6 space-y-6 shadow-2xl animate-scaleUp max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div
+            className="border rounded-3xl max-w-2xl w-full p-6 space-y-6 shadow-2xl animate-scaleUp max-h-[90vh] overflow-y-auto"
+            style={{
+              backgroundColor: '#18181b',
+              borderColor: 'var(--border-color)',
+            }}
+          >
+            <div className="flex items-center justify-between pb-4 border-b" style={{ borderColor: 'var(--border-color)' }}>
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center border border-sky-500/30">
-                  <Boxes className="w-5 h-5" />
-                </div>
                 <div>
                   <h3 className="text-base font-bold text-white">معاينة سجل استهلاك المواد الخام</h3>
                   <p className="text-xs text-slate-400">الفترة: {previewMatModal.period}</p>
@@ -932,29 +918,29 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
               </div>
               <button
                 onClick={() => setPreviewMatModal(null)}
-                className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                className="px-3 py-1 rounded-xl text-slate-400 hover:text-white hover:bg-neutral-800 transition-colors text-xs font-bold cursor-pointer"
               >
-                <X className="w-5 h-5" />
+                إغلاق
               </button>
             </div>
 
             {/* Metrics */}
             <div className="grid grid-cols-3 gap-3">
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800">
+              <div className="bg-neutral-950 p-3.5 rounded-2xl border border-neutral-800">
                 <div className="text-[11px] text-slate-400">الغسلات المكتملة</div>
                 <div className="text-lg font-black text-white font-mono mt-1">
                   {previewMatModal.total_completed_washes} غسلة
                 </div>
               </div>
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800">
+              <div className="bg-neutral-950 p-3.5 rounded-2xl border border-neutral-800">
                 <div className="text-[11px] text-slate-400">إجمالي الجرامات المستهلكة</div>
-                <div className="text-lg font-black text-sky-400 font-mono mt-1">
+                <div className="text-lg font-black text-slate-200 font-mono mt-1">
                   {previewMatModal.total_grams_consumed.toLocaleString()} جم
                 </div>
               </div>
-              <div className="bg-slate-950 p-3.5 rounded-2xl border border-emerald-500/30 bg-emerald-950/10">
-                <div className="text-[11px] text-emerald-400 font-bold">تكلفة المواد الخام الكلية</div>
-                <div className="text-lg font-black text-emerald-400 font-mono mt-1">
+              <div className="bg-red-950/20 p-3.5 rounded-2xl border border-red-950/60">
+                <div className="text-[11px] text-red-400 font-bold">تكلفة المواد الخام الكلية</div>
+                <div className="text-lg font-black text-red-400 font-mono mt-1">
                   {formatEGP(previewMatModal.total_cost_egp)}
                 </div>
               </div>
@@ -965,7 +951,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
               <h4 className="text-xs font-bold text-slate-300">تفصيل استهلاك المواد والمتبقي بالمخزن:</h4>
               <div className="space-y-1.5 max-h-48 overflow-y-auto">
                 {previewMatModal.materials.map((m) => (
-                  <div key={m.id} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                  <div key={m.id} className="flex items-center justify-between p-2.5 rounded-xl bg-neutral-950 border border-neutral-800 text-xs">
                     <div>
                       <span className="text-slate-100 font-bold">{m.name}</span>
                       <div className="text-[10px] text-slate-400">
@@ -973,11 +959,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
                       </div>
                     </div>
                     <div className="text-left font-mono">
-                      <span className={`text-xs font-bold ${m.is_low_stock ? 'text-rose-400' : 'text-slate-300'}`}>
+                      <span className={`text-xs font-bold ${m.is_low_stock ? 'text-red-400' : 'text-slate-300'}`}>
                         المتبقي: {m.current_stock_grams} جم
                       </span>
                       {m.is_low_stock && (
-                        <span className="block text-[9px] text-rose-400 font-sans">تحت حد الأمان</span>
+                        <span className="block text-[9px] text-red-400 font-sans">تحت حد الأمان</span>
                       )}
                     </div>
                   </div>
@@ -986,21 +972,20 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
             </div>
 
             {/* Actions */}
-            <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
+            <div className="flex items-center justify-end gap-3 pt-4 border-t" style={{ borderColor: 'var(--border-color)' }}>
               <button
                 onClick={() => setPreviewMatModal(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold"
+                className="px-4 py-2 bg-neutral-900/60 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 rounded-xl text-xs font-bold cursor-pointer transition-colors"
               >
                 إغلاق
               </button>
               <button
-                onClick={() => {
-                  exportMaterialConsumptionToPdf(previewMatModal);
+                onClick={async () => {
+                  await exportMaterialConsumptionToPdf(previewMatModal);
                   toast.success('تم تحميل ملف PDF');
                 }}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5"
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md shadow-red-950/40 transition-all"
               >
-                <FileText className="w-3.5 h-3.5" />
                 <span>تحميل PDF</span>
               </button>
               <button
@@ -1008,9 +993,8 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigateTab }) => {
                   await exportMaterialConsumptionToExcel(previewMatModal);
                   toast.success('تم تحميل ملف Excel');
                 }}
-                className="px-4 py-2 bg-teal-600 hover:bg-teal-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5"
+                className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all"
               >
-                <Download className="w-3.5 h-3.5" />
                 <span>تحميل Excel</span>
               </button>
             </div>

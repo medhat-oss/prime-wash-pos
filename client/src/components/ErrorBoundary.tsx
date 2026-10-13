@@ -1,5 +1,4 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
-import { AlertOctagon, RefreshCw, Trash2, ShoppingCart, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react';
 
 interface Props {
   children: ReactNode;
@@ -70,19 +69,14 @@ export class ErrorBoundary extends Component<Props, State> {
           style={{ backgroundColor: '#090d16' }}
         >
           <div className="max-w-xl w-full bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-xl space-y-6">
-            {/* Header Icon & Title */}
-            <div className="flex items-center gap-4 border-b border-slate-800/80 pb-5">
-              <div className="w-14 h-14 rounded-2xl bg-rose-950/70 border border-rose-500/40 text-rose-400 flex items-center justify-center shadow-lg shrink-0">
-                <AlertOctagon className="w-7 h-7" />
-              </div>
-              <div className="space-y-1 flex-1">
-                <h2 className="text-lg sm:text-xl font-black text-white">
-                  عذراً، حدث خطأ أثناء تشغيل النظام
-                </h2>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  تم التقاط استثناء برمجي غير متوقع ومنع الشاشة من التوقف
-                </p>
-              </div>
+            {/* Header Title */}
+            <div className="border-b border-slate-800/80 pb-5">
+              <h2 className="text-lg sm:text-xl font-black text-white">
+                عذراً، حدث خطأ أثناء تشغيل النظام
+              </h2>
+              <p className="text-xs text-slate-400 leading-relaxed mt-1">
+                تم التقاط استثناء برمجي غير متوقع ومنع الشاشة من التوقف
+              </p>
             </div>
 
             {/* Error Message Box */}
@@ -92,19 +86,13 @@ export class ErrorBoundary extends Component<Props, State> {
                 <button
                   type="button"
                   onClick={this.handleCopyError}
-                  className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition-colors"
+                  className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition-colors font-bold"
                   title="نسخ تفاصيل الخطأ"
                 >
                   {this.state.copied ? (
-                    <>
-                      <Check className="w-3 h-3 text-emerald-400" />
-                      <span className="text-emerald-400">تم النسخ</span>
-                    </>
+                    <span className="text-emerald-400">تم النسخ</span>
                   ) : (
-                    <>
-                      <Copy className="w-3 h-3" />
-                      <span>نسخ</span>
-                    </>
+                    <span>نسخ</span>
                   )}
                 </button>
               </div>
@@ -118,14 +106,10 @@ export class ErrorBoundary extends Component<Props, State> {
               <button
                 type="button"
                 onClick={() => this.setState({ showDetails: !this.state.showDetails })}
-                className="flex items-center justify-between w-full text-xs text-slate-400 hover:text-slate-200 py-1.5 transition-colors"
+                className="flex items-center justify-between w-full text-xs text-slate-400 hover:text-slate-200 py-1.5 transition-colors font-semibold"
               >
                 <span>عرض التفاصيل التقنية الدقيقة (Stack Trace)</span>
-                {this.state.showDetails ? (
-                  <ChevronUp className="w-4 h-4" />
-                ) : (
-                  <ChevronDown className="w-4 h-4" />
-                )}
+                <span>{this.state.showDetails ? '▲' : '▼'}</span>
               </button>
 
               {this.state.showDetails && (
@@ -145,7 +129,6 @@ export class ErrorBoundary extends Component<Props, State> {
                 onClick={this.handleReload}
                 className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs shadow-lg transition-all active:scale-95"
               >
-                <RefreshCw className="w-4 h-4" />
                 <span>إعادة تحميل</span>
               </button>
 
@@ -155,7 +138,6 @@ export class ErrorBoundary extends Component<Props, State> {
                 className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold text-xs border border-amber-500/30 transition-all active:scale-95"
                 title="مسح الكاش والذاكرة المحلية والبدء من جديد"
               >
-                <Trash2 className="w-4 h-4" />
                 <span>إعادة ضبط الذاكرة</span>
               </button>
 
@@ -164,7 +146,6 @@ export class ErrorBoundary extends Component<Props, State> {
                 onClick={this.handleGoToPos}
                 className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition-all active:scale-95"
               >
-                <ShoppingCart className="w-4 h-4 text-cyan-400" />
                 <span>شاشة الكاشير</span>
               </button>
             </div>

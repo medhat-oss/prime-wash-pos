@@ -256,7 +256,7 @@ export async function exportVatReportToExcel(report: MonthlyVatReport) {
     views: [{ rightToLeft: true }],
   });
 
-  logSheet.mergeCells('A1:L1');
+  logSheet.mergeCells('A1:N1');
   const logTitle = logSheet.getCell('A1');
   logTitle.value = `سجل الفواتير الضريبية وإيصالات نقاط البيع - الفترة ${report.period}`;
   logTitle.font = { name: 'Arial', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
@@ -270,13 +270,15 @@ export async function exportVatReportToExcel(report: MonthlyVatReport) {
     'رقم اللوحة',
     'نوع السيارة',
     'اسم العميل',
-    'الخدمة',
+    'اسم الخدمة',
+    'كود EGS للخدمة',
     'طريقة الدفع',
-    'الصافي قبل الضريبة',
+    'الصافي قبل الضريبة (وعاء 14%)',
     'ضريبة 14%',
-    'الإجمالي المطلوب',
+    'الإجمالي المطلوب شامل الضريبة',
     'حالة الفاتورة',
-    'حالة ETA',
+    'حالة منظومة الإيصال ETA',
+    'المعرف الرقمي الموحد (ETA UUID)',
   ]);
   invHeaderRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
   invHeaderRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF334155' } };
@@ -290,6 +292,7 @@ export async function exportVatReportToExcel(report: MonthlyVatReport) {
       inv.car_type || 'سيدان',
       inv.customer_name || '-',
       inv.service_name || '-',
+      inv.egs_code || 'EG-123456789-WASH01',
       getPayMethodLabel(inv.payment_method),
       inv.subtotal,
       inv.tax_amount,
@@ -298,13 +301,14 @@ export async function exportVatReportToExcel(report: MonthlyVatReport) {
       inv.eta_status === 'valid'
         ? 'معتمد بالضرائب'
         : inv.eta_status === 'pending'
-        ? 'قيد الإرسال'
+        ? 'قيد المزامنة'
         : 'غير مرسل',
+      inv.eta_uuid || '-',
     ]);
     r.height = 20;
-    logSheet.getCell(`H${r.number}`).numFmt = '#,##0.00';
-    logSheet.getCell(`I${r.number}`).numFmt = '#,##0.00';
-    logSheet.getCell(`J${r.number}`).numFmt = '#,##0.00';
+    logSheet.getCell(`I${r.number}`).numFmt = '#,##0.00 "ج.م"';
+    logSheet.getCell(`J${r.number}`).numFmt = '#,##0.00 "ج.م"';
+    logSheet.getCell(`K${r.number}`).numFmt = '#,##0.00 "ج.م"';
   });
 
   // Auto-fit columns

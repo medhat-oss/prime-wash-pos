@@ -1,34 +1,78 @@
 import React, { useState, useEffect } from 'react';
 import Navbar from './components/Navbar.js';
+import Footer from './components/Footer.js';
 import PosPage from './pages/pos/PosPage.js';
-import AdminDashboard from './pages/admin/AdminDashboard.js';
 import { ToastProvider, useToast } from './components/Toast.js';
 import ClockInOutModal from './components/ClockInOutModal.js';
 import AdminLockModal from './components/AdminLockModal.js';
 import ChangeAdminPinModal from './components/ChangeAdminPinModal.js';
-import { hrApi, settingsApi, setAdminPin } from './api/client.js';
+import { hrApi, settingsApi, setAdminPin, getStoredEmployees } from './api/client.js';
 import { Employee } from './types/index.js';
 import { loadStoredTheme, applyThemeToRoot } from './utils/theme.js';
+import { runLocalStorageMigration } from './db/migration.js';
+import { startSyncEngine, rehydrateClientState, getPendingSyncCount } from './sync/syncEngine.js';
+import { initOrdersFromIndexedDB } from './utils/orderStorage.js';
+import { initInventoryFromIndexedDB } from './utils/inventoryStorage.js';
+import { bootstrapAdminPinHash } from './utils/adminAuthStorage.js';
+import { purgeStaleCachedShifts } from './utils/shiftStorage.js';
+import { safeSessionStorage } from './utils/safeStorage.js';
 import useAdminIdleTimer from './hooks/useAdminIdleTimer.js';
-import { ShieldCheck, Lock, ShoppingCart } from 'lucide-react';
+
+// Lazy load heavy admin dashboard (SheetJS, jsPDF, reports) and public landing page
+const AdminDashboard = React.lazy(() => import('./pages/admin/AdminDashboard.js'));
+const LandingPage = React.lazy(() => import('./pages/public/LandingPage.js'));
 
 function AppContent() {
   const toast = useToast();
 
+  // Detect if user opened the public offers/showcase landing page
+  const isPublicLandingRoute =
+    typeof window !== 'undefined' &&
+    (window.location.pathname.startsWith('/offers') ||
+      window.location.pathname.startsWith('/showcase') ||
+      window.location.search.includes('view=offers') ||
+      window.location.search.includes('view=landing') ||
+      window.location.hash === '#offers' ||
+      window.location.hash === '#showcase');
+
+  const [isLandingMode, setIsLandingMode] = useState<boolean>(Boolean(isPublicLandingRoute));
+
   // Detect if user opened the app via direct Owner URL link (e.g. /?mode=owner, /?view=admin, #admin, /admin)
   const isDirectOwnerRoute =
-    window.location.search.includes('mode=owner') ||
-    window.location.search.includes('view=admin') ||
-    window.location.pathname.startsWith('/admin') ||
-    window.location.hash === '#admin';
+    typeof window !== 'undefined' &&
+    (window.location.search.includes('mode=owner') ||
+      window.location.search.includes('view=admin') ||
+      window.location.pathname.startsWith('/admin') ||
+      window.location.hash === '#admin');
 
-  // 1. Initial State strictly locked
-  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'pos' | 'admin'>('pos');
+  // 1. Initial State derived from active session in storage (Incognito safe)
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(() => {
+    try {
+      const unlocked = safeSessionStorage.getItem('cw_admin_unlocked') === 'true';
+      const pin = safeSessionStorage.getItem('cw_admin_pin');
+      return Boolean(unlocked && pin);
+    } catch {
+      return false;
+    }
+  });
+  const [activeTab, setActiveTab] = useState<'pos' | 'admin'>(() => {
+    try {
+      const savedTab = safeSessionStorage.getItem('cw_active_tab');
+      const unlocked = safeSessionStorage.getItem('cw_admin_unlocked') === 'true';
+      const pin = safeSessionStorage.getItem('cw_admin_pin');
+      if (savedTab === 'admin' && unlocked && pin) {
+        return 'admin';
+      }
+      if (isDirectOwnerRoute && unlocked && pin) {
+        return 'admin';
+      }
+    } catch {}
+    return 'pos';
+  });
   const [isAdminLockModalOpen, setIsAdminLockModalOpen] = useState(false);
   const [isChangePinModalOpen, setIsChangePinModalOpen] = useState(false);
   const [isClockModalOpen, setIsClockModalOpen] = useState(false);
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>(() => getStoredEmployees());
   const [isOwnerDirectMode] = useState<boolean>(isDirectOwnerRoute);
 
   // 3-Minute Inactivity Auto-Lock for Admin Session
@@ -36,7 +80,12 @@ function AppContent() {
     timeoutMs: 3 * 60 * 1000, // 3 continuous minutes (180s)
     enabled: activeTab === 'admin' && isAdminUnlocked,
     onTimeout: () => {
-      setAdminPin(null);
+      try {
+        setAdminPin(null);
+        safeSessionStorage.removeItem('cw_admin_pin');
+        safeSessionStorage.removeItem('cw_admin_unlocked');
+        safeSessionStorage.setItem('cw_active_tab', 'pos');
+      } catch {}
       setIsAdminUnlocked(false);
       setIsAdminLockModalOpen(false);
       setIsChangePinModalOpen(false);
@@ -52,23 +101,43 @@ function AppContent() {
   });
 
   useEffect(() => {
-    // Purge any stale admin authentication tokens on app startup
-    setAdminPin(null);
-    setIsAdminUnlocked(false);
+    try {
+      // Check if session is already unlocked in sessionStorage
+      const hasValidAdminSession =
+        safeSessionStorage.getItem('cw_admin_unlocked') === 'true' &&
+        Boolean(safeSessionStorage.getItem('cw_admin_pin'));
 
-    // If accessed directly via owner deep-link, immediately prompt PIN lock
-    if (isDirectOwnerRoute) {
-      setIsAdminLockModalOpen(true);
-    } else {
-      setActiveTab('pos');
+      if (hasValidAdminSession) {
+        const pin = safeSessionStorage.getItem('cw_admin_pin')!;
+        setAdminPin(pin);
+        setIsAdminUnlocked(true);
+        if (safeSessionStorage.getItem('cw_active_tab') === 'admin' || isDirectOwnerRoute) {
+          setActiveTab('admin');
+        }
+      } else {
+        // Purge any stale admin authentication tokens on app startup
+        setAdminPin(null);
+        setIsAdminUnlocked(false);
+
+        // If accessed directly via owner deep-link, immediately prompt PIN lock
+        if (isDirectOwnerRoute) {
+          setIsAdminLockModalOpen(true);
+        } else {
+          setActiveTab('pos');
+        }
+      }
+    } catch (err) {
+      console.warn('[App Init Session Check]', err);
     }
 
-    // 1. Apply cached theme immediately for 0 flash
-    loadStoredTheme();
+    // Apply cached theme immediately for 0 flash
+    try {
+      loadStoredTheme();
+    } catch {}
 
-    // 2. Fetch fresh theme settings from backend
+    // Fetch theme settings from backend (deduplicated)
     settingsApi
-      .getPosSettings(true)
+      .getPosSettings(false)
       .then((settings) => {
         if (settings) {
           applyThemeToRoot(settings);
@@ -76,7 +145,7 @@ function AppContent() {
       })
       .catch(() => {});
 
-    // 3. Listen to live theme updates across tabs/events
+    // Listen to live theme updates across tabs/events
     const handleThemeUpdate = (e: any) => {
       if (e.detail) {
         applyThemeToRoot(e.detail);
@@ -84,19 +153,81 @@ function AppContent() {
     };
     window.addEventListener('pos-settings-updated', handleThemeUpdate);
 
-    // 4. Fetch active employees for clock-in modal
+    // Fetch active employees for modals & pass down to POS (deduplicated)
     hrApi
-      .getEmployees('active')
-      .then((data) => setEmployees(data))
+      .getEmployees('active', false)
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setEmployees(data);
+        }
+      })
       .catch(() => {});
 
+    let stopSyncEngine = () => {};
+
+    // Post-paint deferred background tasks to give 100% thread priority to POS frame 0
+    const deferredTimer = setTimeout(() => {
+      // 0a. Boot-time self-healing: purge stale zombie shifts in background
+      purgeStaleCachedShifts(24, getPendingSyncCount).catch(() => {});
+
+      // 0b. Initialize Offline-First IndexedDB & run one-time localStorage migration
+      try {
+        runLocalStorageMigration()
+          .then((res) => {
+            if (res && res.migrated) {
+              console.log('✅ [IndexedDB] One-time migration completed:', res.counts);
+            }
+            try {
+              initOrdersFromIndexedDB();
+              initInventoryFromIndexedDB();
+              bootstrapAdminPinHash().catch(() => {});
+            } catch {}
+          })
+          .catch(() => {});
+      } catch {}
+
+      // 1. Boot background Outbox Sync Engine with FIFO execution & mutex locks
+      try {
+        stopSyncEngine = startSyncEngine();
+      } catch (err) {
+        console.warn('[SyncEngine Init Warning]', err);
+      }
+    }, 400);
+
+    // Throttled focus sync (at most once every 15s)
+    let lastFocusSync = Date.now();
+    const handleFocusSync = () => {
+      const now = Date.now();
+      if (now - lastFocusSync > 15000) {
+        lastFocusSync = now;
+        rehydrateClientState(false).catch(() => {});
+      }
+    };
+
+    // Listen for session takeover / hijack across devices
+    const handleSessionHijacked = (e: any) => {
+      const hijackedCashier = e.detail?.cashier_name || 'الكاشير';
+      toast.warning(
+        `تم تسجيل الدخول لـ (${hijackedCashier}) من جهاز آخر. تم قفل الجلسة على هذا الجهاز لمنع تضارب الفواتير.`,
+        'تم نقل الجلسة'
+      );
+    };
+    window.addEventListener('cw_session_hijacked', handleSessionHijacked);
+
     return () => {
+      clearTimeout(deferredTimer);
       window.removeEventListener('pos-settings-updated', handleThemeUpdate);
+      window.removeEventListener('focus', handleFocusSync);
+      window.removeEventListener('cw_session_hijacked', handleSessionHijacked);
+      stopSyncEngine();
     };
   }, [isDirectOwnerRoute]);
 
   const handleAdminUnlockSuccess = (pin: string) => {
     setAdminPin(pin);
+    safeSessionStorage.setItem('cw_admin_pin', pin);
+    safeSessionStorage.setItem('cw_admin_unlocked', 'true');
+    safeSessionStorage.setItem('cw_active_tab', 'admin');
     setIsAdminUnlocked(true);
     setIsAdminLockModalOpen(false);
     setActiveTab('admin');
@@ -105,6 +236,9 @@ function AppContent() {
 
   const handleAdminLock = () => {
     setAdminPin(null);
+    safeSessionStorage.removeItem('cw_admin_pin');
+    safeSessionStorage.removeItem('cw_admin_unlocked');
+    safeSessionStorage.setItem('cw_active_tab', 'pos');
     setIsAdminUnlocked(false);
     setIsAdminLockModalOpen(false);
     setIsChangePinModalOpen(false);
@@ -114,6 +248,7 @@ function AppContent() {
 
   const handleOpenAdminLock = () => {
     if (isAdminUnlocked) {
+      safeSessionStorage.setItem('cw_active_tab', 'admin');
       setActiveTab('admin');
     } else {
       setIsAdminLockModalOpen(true);
@@ -123,18 +258,35 @@ function AppContent() {
   const handleTabChange = (targetTab: 'pos' | 'admin') => {
     if (targetTab === 'admin') {
       if (isAdminUnlocked) {
+        safeSessionStorage.setItem('cw_active_tab', 'admin');
         setActiveTab('admin');
       } else {
         setIsAdminLockModalOpen(true);
       }
     } else {
+      safeSessionStorage.setItem('cw_active_tab', 'pos');
       setActiveTab('pos');
     }
   };
 
+  // If in public landing page mode, render standalone luxury showcase directly
+  if (isLandingMode) {
+    return (
+      <React.Suspense
+        fallback={
+          <div className="min-h-screen bg-black flex items-center justify-center text-white">
+            <div className="w-8 h-8 border-4 border-red-600 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        }
+      >
+        <LandingPage />
+      </React.Suspense>
+    );
+  }
+
   return (
     <div
-      className="min-h-screen text-slate-100 font-tajawal antialiased flex flex-col selection:bg-primary selection:text-white transition-colors duration-300"
+      className="min-h-screen text-slate-100 font-tajawal antialiased flex flex-col selection:bg-primary selection:text-white transition-colors duration-300 overflow-x-hidden w-full max-w-full"
       style={{ backgroundColor: 'var(--app-bg)' }}
     >
       {/* Navbar with isolated cashier view and admin lock controls */}
@@ -173,10 +325,19 @@ function AppContent() {
       />
 
       {/* Main Content Body: Strict Role Isolation & Responsive Container */}
-      <main className="flex-1 bg-transparent">
+      <main className="flex-1 bg-transparent overflow-x-hidden w-full max-w-full">
         {activeTab === 'admin' && isAdminUnlocked ? (
-          <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
-            <AdminDashboard />
+          <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 overflow-x-hidden w-full max-w-full">
+            <React.Suspense
+              fallback={
+                <div className="p-12 text-center text-slate-400">
+                  <div className="w-8 h-8 border-4 border-red-600 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+                  <p className="text-sm font-bold">جاري تحميل لوحة الإدارة...</p>
+                </div>
+              }
+            >
+              <AdminDashboard />
+            </React.Suspense>
           </div>
         ) : isOwnerDirectMode && !isAdminUnlocked ? (
           /* Direct Owner Login Gate Screen (if opened via ?mode=owner and locked) */
@@ -188,17 +349,8 @@ function AppContent() {
                 borderColor: 'var(--border-color)',
               }}
             >
-              <div
-                className="w-16 h-16 rounded-2xl text-white flex items-center justify-center mx-auto shadow-xl"
-                style={{
-                  background: 'linear-gradient(135deg, var(--color-primary), var(--color-secondary))',
-                }}
-              >
-                <ShieldCheck className="w-8 h-8" />
-              </div>
-
               <div>
-                <h2 className="text-xl font-black text-white">بوابة مالك المغسلة (Owner Portal)</h2>
+                <h2 className="text-xl font-black text-white">بوابة مالك المنشأة (Owner Portal)</h2>
                 <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
                   متابعة العمليات والمبيعات، المخزون، الحسابات والرواتب، وتقارير الضرائب لحظياً
                 </p>
@@ -213,7 +365,6 @@ function AppContent() {
                   boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
                 }}
               >
-                <Lock className="w-4 h-4" />
                 <span>إدخال رمز PIN للدخول</span>
               </button>
 
@@ -222,23 +373,17 @@ function AppContent() {
                 onClick={() => setActiveTab('pos')}
                 className="text-xs text-slate-400 hover:text-slate-200 flex items-center justify-center gap-1.5 mx-auto transition-colors"
               >
-                <ShoppingCart className="w-3.5 h-3.5" />
                 <span>الذهاب إلى شاشة الكاشير (POS)</span>
               </button>
             </div>
           </div>
         ) : (
-          <PosPage />
+          <PosPage initialEmployees={employees} onOwnerLogin={handleAdminUnlockSuccess} />
         )}
       </main>
 
       {/* Footer */}
-      <footer
-        className="py-4 border-t text-center text-xs text-slate-500 transition-colors duration-300"
-        style={{ borderColor: 'var(--border-color)' }}
-      >
-        نظام إدارة مغسلة سيارات ذكي &copy; 2026 | السوق المصري (EGP) - إدارة المخزون بالجرام ونقاط البيع والرواتب
-      </footer>
+      <Footer />
     </div>
   );
 }

@@ -1,18 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import {
-  LogIn,
-  LogOut,
-  Delete,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
-  Clock,
-  UserCheck,
-} from 'lucide-react';
 import Modal from './Modal.js';
 import { Employee } from '../types/index.js';
 import { hrApi } from '../api/client.js';
 import { useToast } from './Toast.js';
+import { getFormattedTodayStatusMap, getEmployeeTodayShiftStats } from '../utils/attendanceStorage.js';
 
 interface ClockInOutModalProps {
   isOpen: boolean;
@@ -73,13 +64,21 @@ export const ClockInOutModal: React.FC<ClockInOutModalProps> = ({
       setErrorMessage(null);
       setLastResult(null);
 
-      // Load status map
+      // Load status map immediately with local fallback
+      const initialMap = getFormattedTodayStatusMap(employees);
+      setTodayStatus(initialMap);
+
+      // Refresh from live server
       hrApi
-        .getTodayAttendanceStatus()
-        .then((data) => setTodayStatus(data || {}))
+        .getTodayAttendanceStatus(true)
+        .then((data) => {
+          if (data && Object.keys(data).length > 0) {
+            setTodayStatus(data);
+          }
+        })
         .catch(() => {});
     }
-  }, [isOpen, initialMode]);
+  }, [isOpen, initialMode, employees]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -168,7 +167,6 @@ export const ClockInOutModal: React.FC<ClockInOutModalProps> = ({
       }
       setPin('');
     } finally {
-
       setLoading(false);
     }
   };
@@ -192,58 +190,69 @@ export const ClockInOutModal: React.FC<ClockInOutModalProps> = ({
       maxWidth="md"
     >
       <div className="space-y-4 select-none">
-        {/* Mode Selector Pill if mode is 'both' */}
-        {initialMode === 'both' && (
-          <div
-            className="grid grid-cols-2 gap-2 p-1.5 rounded-2xl border"
-            style={{
-              backgroundColor: 'rgba(0, 0, 0, 0.4)',
-              borderColor: 'var(--border-color)',
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => setActiveMode('check_in')}
-              className={`flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeMode === 'check_in'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>تسجيل حضور (شفت)</span>
-            </button>
+        {/* Dynamic Shift Stats for selected employee */}
+        {(() => {
+          const shiftStats = selectedEmpId ? getEmployeeTodayShiftStats(selectedEmpId, employees) : null;
+          const isCheckInNext = !shiftStats?.hasOpenShift;
+          const checkInLabel = shiftStats && shiftStats.completedShiftsCount > 0
+            ? `تسجيل حضور (الوردية ${shiftStats.nextShiftNumber})`
+            : 'تسجيل حضور (شفت)';
+          const checkOutLabel = shiftStats && shiftStats.hasOpenShift
+            ? `تسجيل إنصراف (الوردية ${shiftStats.completedShiftsCount + 1})`
+            : 'تسجيل إنصراف (شفت)';
 
-            <button
-              type="button"
-              onClick={() => setActiveMode('check_out')}
-              className={`flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeMode === 'check_out'
-                  ? 'bg-rose-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>تسجيل إنصراف (شفت)</span>
-            </button>
-          </div>
-        )}
+          return (
+            <>
+              {/* Mode Selector Pill if mode is 'both' */}
+              {initialMode === 'both' && (
+                <div
+                  className="grid grid-cols-2 gap-2 p-1.5 rounded-2xl border"
+                  style={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                    borderColor: 'var(--border-color)',
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setActiveMode('check_in')}
+                    className={`flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+                      activeMode === 'check_in'
+                        ? 'bg-emerald-600 text-white shadow-md'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <span>{checkInLabel}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveMode('check_out')}
+                    className={`flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+                      activeMode === 'check_out'
+                        ? 'bg-rose-600 text-white shadow-md'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <span>{checkOutLabel}</span>
+                  </button>
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {/* Result Banner if just clocked */}
         {lastResult && (
-          <div className="p-4 rounded-2xl bg-emerald-950/60 border border-emerald-500/50 text-emerald-100 flex items-start gap-3 animate-in zoom-in-95">
-            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-            <div className="text-xs space-y-1">
-              <div className="font-bold text-sm text-emerald-300">
-                {lastResult.action === 'check_in' ? '🟢 تم تسجيل الحضور بنجاح' : '🔴 تم تسجيل الإنصراف بنجاح'}
-              </div>
-              <div>{lastResult.message}</div>
-              {lastResult.hours_worked !== undefined && (
-                <div className="font-mono text-xs text-emerald-300 pt-1">
-                  إجمالي الساعات الفعلية: {lastResult.hours_worked} ساعة | الساعة: {lastResult.time}
-                </div>
-              )}
+          <div className="p-4 rounded-2xl bg-emerald-950/60 border border-emerald-500/50 text-emerald-100 space-y-1 animate-in zoom-in-95">
+            <div className="font-bold text-sm text-emerald-300">
+              {lastResult.action === 'check_in' ? 'تم تسجيل الحضور بنجاح' : 'تم تسجيل الإنصراف بنجاح'}
             </div>
+            <div className="text-xs">{lastResult.message}</div>
+            {lastResult.hours_worked !== undefined && (
+              <div className="font-mono text-xs text-emerald-300 pt-1">
+                إجمالي الساعات الفعلية: {lastResult.hours_worked} ساعة | الساعة: {lastResult.time}
+              </div>
+            )}
           </div>
         )}
 
@@ -255,9 +264,19 @@ export const ClockInOutModal: React.FC<ClockInOutModalProps> = ({
           <select
             value={selectedEmpId}
             onChange={(e) => {
-              setSelectedEmpId(e.target.value);
+              const newEmpId = e.target.value;
+              setSelectedEmpId(newEmpId);
               setErrorMessage(null);
               setLastResult(null);
+
+              if (newEmpId && initialMode === 'both') {
+                const stats = getEmployeeTodayShiftStats(newEmpId, employees);
+                if (stats.hasOpenShift) {
+                  setActiveMode('check_out');
+                } else {
+                  setActiveMode('check_in');
+                }
+              }
             }}
             className="w-full border rounded-xl px-3.5 py-2.5 text-sm text-slate-100 focus:outline-none transition-colors"
             style={{
@@ -276,37 +295,56 @@ export const ClockInOutModal: React.FC<ClockInOutModalProps> = ({
           </select>
 
           {/* Today shift status badge for selected employee */}
-          {selectedEmpId && todayStatus[selectedEmpId] && (
-            <div
-              className="flex items-center justify-between gap-2 mt-2 px-3 py-2 rounded-xl border text-xs animate-in fade-in"
-              style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.03)',
-                borderColor: 'var(--border-color)',
-              }}
-            >
-              <div className="flex items-center gap-1.5 text-slate-300">
-                <Clock className="w-3.5 h-3.5 text-slate-400" />
-                <span>حالة الدوام اليوم:</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className={`px-2 py-0.5 rounded-full font-bold text-[11px] border ${todayStatus[selectedEmpId].badgeColor}`}>
-                  {todayStatus[selectedEmpId].label}
-                </span>
-                {todayStatus[selectedEmpId].check_in && (
-                  <span className="text-slate-400 text-[10px] font-mono">
-                    (منذ: {new Date(todayStatus[selectedEmpId].check_in!).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })})
-                  </span>
+          {selectedEmpId && (() => {
+            const empStatus = todayStatus[selectedEmpId] || getFormattedTodayStatusMap(employees)[selectedEmpId];
+            const shiftStats = getEmployeeTodayShiftStats(selectedEmpId, employees);
+            if (!empStatus) return null;
+            return (
+              <div className="space-y-1.5 mt-2">
+                <div
+                  className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs animate-in fade-in"
+                  style={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                    borderColor: 'var(--border-color)',
+                  }}
+                >
+                  <div className="text-slate-300 font-medium">
+                    <span>حالة الدوام اليوم:</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`px-2 py-0.5 rounded-full font-bold text-[11px] border ${empStatus.badgeColor}`}>
+                      {empStatus.label}
+                    </span>
+                    {empStatus.check_in && (
+                      <span className="text-slate-400 text-[10px] font-mono">
+                        (منذ: {new Date(empStatus.check_in).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })})
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Multi-shift Badge */}
+                {shiftStats.completedShiftsCount > 0 && !shiftStats.hasOpenShift && (
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl border border-sky-500/40 bg-sky-950/40 text-sky-200 text-xs font-semibold animate-in fade-in">
+                    <span>🔄 إتمام ({shiftStats.completedShiftsCount}) وردية اليوم</span>
+                    <span className="text-sky-300 font-bold">جاهز لبدء الوردية رقم ({shiftStats.nextShiftNumber})</span>
+                  </div>
+                )}
+                {shiftStats.hasOpenShift && (
+                  <div className="flex items-center justify-between px-3 py-1.5 rounded-xl border border-emerald-500/40 bg-emerald-950/40 text-emerald-200 text-xs font-semibold animate-in fade-in">
+                    <span>🟢 الوردية الحالية رقم ({shiftStats.completedShiftsCount + 1}) قيد العمل</span>
+                    <span className="text-emerald-300 font-bold font-mono">إجمالي اليوم: {shiftStats.todayTotalHours} ساعة</span>
+                  </div>
                 )}
               </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
 
         {/* Inline Error Message Banner */}
         {errorMessage && (
-          <div className="p-3.5 rounded-2xl bg-rose-950/70 border border-rose-500/50 text-rose-200 text-xs flex items-start gap-2.5 animate-in fade-in zoom-in-95">
-            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-            <div className="font-semibold leading-relaxed flex-1">{errorMessage}</div>
+          <div className="p-3.5 rounded-2xl bg-rose-950/70 border border-rose-500/50 text-rose-200 text-xs animate-in fade-in zoom-in-95">
+            <div className="font-semibold leading-relaxed">{errorMessage}</div>
           </div>
         )}
 
@@ -384,13 +422,13 @@ export const ClockInOutModal: React.FC<ClockInOutModalProps> = ({
             <button
               type="button"
               onClick={handleBackspace}
-              className="h-11 rounded-xl border text-slate-400 hover:text-slate-200 flex items-center justify-center transition-all active:scale-95"
+              className="h-11 rounded-xl border text-slate-400 hover:text-slate-200 flex items-center justify-center font-bold text-base transition-all active:scale-95"
               style={{
                 backgroundColor: 'rgba(0, 0, 0, 0.35)',
                 borderColor: 'var(--border-color)',
               }}
             >
-              <Delete className="w-4 h-4" />
+              ⌫
             </button>
           </div>
         </div>
@@ -404,10 +442,8 @@ export const ClockInOutModal: React.FC<ClockInOutModalProps> = ({
               disabled={loading || !selectedEmpId || pin.length < 4}
               className="w-full flex items-center justify-center gap-2 py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-2xl font-bold text-sm shadow-lg shadow-emerald-600/20 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <LogIn className="w-4 h-4" />
+              {loading && (
+                <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
               )}
               <span>تسجيل حضور (بدء الشفت)</span>
             </button>
@@ -418,10 +454,8 @@ export const ClockInOutModal: React.FC<ClockInOutModalProps> = ({
               disabled={loading || !selectedEmpId || pin.length < 4}
               className="w-full flex items-center justify-center gap-2 py-3.5 bg-gradient-to-r from-rose-600 to-amber-600 hover:from-rose-700 hover:to-amber-700 text-white rounded-2xl font-bold text-sm shadow-lg shadow-rose-600/20 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {loading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <LogOut className="w-4 h-4" />
+              {loading && (
+                <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
               )}
               <span>تسجيل إنصراف (إنهاء الشفت)</span>
             </button>

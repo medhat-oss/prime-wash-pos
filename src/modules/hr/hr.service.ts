@@ -44,6 +44,7 @@ export class HrService {
         name, 
         phone, 
         role, 
+        COALESCE(system_role, 'worker') AS system_role,
         hourly_rate::float AS hourly_rate, 
         overtime_hourly_rate::float AS overtime_hourly_rate,
         target_weekly_days, 
@@ -61,7 +62,7 @@ export class HrService {
       sql += ` WHERE status = $1`;
       params.push(status);
     }
-    sql += ` ORDER BY CASE WHEN name = 'مستر فتحي' OR role LIKE '%مالك%' THEN 0 ELSE 1 END, name ASC`;
+    sql += ` ORDER BY CASE WHEN system_role = 'owner' OR name = 'مستر فتحي' OR role LIKE '%مالك%' THEN 0 ELSE 1 END, name ASC`;
 
     const res = await query(sql, params);
     return res.rows;
@@ -74,6 +75,7 @@ export class HrService {
         name, 
         phone, 
         role, 
+        COALESCE(system_role, 'worker') AS system_role,
         hourly_rate::float AS hourly_rate, 
         overtime_hourly_rate::float AS overtime_hourly_rate,
         target_weekly_days, 
@@ -98,6 +100,7 @@ export class HrService {
     name: string;
     phone?: string;
     role?: string;
+    system_role?: 'worker' | 'cashier' | 'manager' | 'owner';
     hourly_rate?: number;
     overtime_hourly_rate?: number | null;
     target_weekly_days?: number;
@@ -122,14 +125,15 @@ export class HrService {
 
     const res = await query(
       `INSERT INTO employees (
-        name, phone, role, hourly_rate, overtime_hourly_rate, target_weekly_days, target_weekly_hours, weekly_off_day, is_paid_weekly_off, pin_code, status, hire_date
+        name, phone, role, system_role, hourly_rate, overtime_hourly_rate, target_weekly_days, target_weekly_hours, weekly_off_day, is_paid_weekly_off, pin_code, status, hire_date
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING 
         id, 
         name, 
         phone, 
         role, 
+        COALESCE(system_role, 'worker') AS system_role,
         hourly_rate::float AS hourly_rate, 
         overtime_hourly_rate::float AS overtime_hourly_rate,
         target_weekly_days, 
@@ -144,6 +148,7 @@ export class HrService {
         data.name.trim(),
         data.phone ? data.phone.trim() : null,
         data.role ? data.role.trim() : 'فني غسيل',
+        data.system_role || 'worker',
         data.hourly_rate ?? 30.0,
         data.overtime_hourly_rate !== undefined && data.overtime_hourly_rate !== null && data.overtime_hourly_rate > 0
           ? data.overtime_hourly_rate
@@ -167,6 +172,7 @@ export class HrService {
       name?: string;
       phone?: string;
       role?: string;
+      system_role?: 'worker' | 'cashier' | 'manager' | 'owner';
       hourly_rate?: number;
       overtime_hourly_rate?: number | null;
       target_weekly_days?: number;
@@ -194,6 +200,10 @@ export class HrService {
     if (data.role !== undefined) {
       fields.push(`role = $${idx++}`);
       values.push(data.role.trim());
+    }
+    if (data.system_role !== undefined) {
+      fields.push(`system_role = $${idx++}`);
+      values.push(data.system_role);
     }
     if (data.hourly_rate !== undefined) {
       if (isNaN(data.hourly_rate) || data.hourly_rate < 0) {
@@ -255,6 +265,7 @@ export class HrService {
         name, 
         phone, 
         role, 
+        COALESCE(system_role, 'worker') AS system_role,
         hourly_rate::float AS hourly_rate, 
         overtime_hourly_rate::float AS overtime_hourly_rate,
         target_weekly_days, 
@@ -557,6 +568,35 @@ export class HrService {
 
 
     const workDate = data.work_date || toLocalISODate(checkInDate);
+
+    // Check if an open attendance already exists for today to avoid duplicates
+    if (!data.check_out) {
+      const existingOpen = await query(
+        `SELECT id FROM attendance WHERE employee_id = $1 AND work_date = $2 AND check_out IS NULL ORDER BY check_in DESC LIMIT 1`,
+        [data.employee_id, workDate]
+      );
+
+      if (existingOpen.rows.length > 0) {
+        const updateExisting = await query(
+          `UPDATE attendance 
+           SET check_in = COALESCE($1, check_in), notes = COALESCE($2, notes)
+           WHERE id = $3
+           RETURNING 
+            id, 
+            employee_id, 
+            work_date, 
+            check_in, 
+            check_out, 
+            actual_hours::float AS actual_hours, 
+            overtime_hours::float AS overtime_hours, 
+            deducted_hours::float AS deducted_hours, 
+            notes, 
+            created_at`,
+          [data.check_in, data.notes || null, existingOpen.rows[0].id]
+        );
+        return updateExisting.rows[0];
+      }
+    }
 
     const res = await query(
       `INSERT INTO attendance (

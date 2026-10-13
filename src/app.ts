@@ -13,6 +13,7 @@ import taxRoutes from './modules/tax/tax.routes.js';
 import settingsRoutes from './modules/settings/settings.routes.js';
 import uploadRoutes from './modules/upload/upload.routes.js';
 import expensesRoutes from './modules/expenses/expenses.routes.js';
+import landingRoutes from './modules/landing/landing.routes.js';
 import { generalApiLimiter } from './middleware/rateLimiter.js';
 
 
@@ -112,6 +113,7 @@ export const createApp = (): Express => {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/upload', uploadRoutes);
   app.use('/api/expenses', expensesRoutes);
+  app.use('/api/landing', landingRoutes);
 
 
   // Production Static Serving for React Client (SPA fallback)

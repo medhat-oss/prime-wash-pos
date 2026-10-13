@@ -1,19 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import {
-  Printer,
-  Check,
-  X,
-  ShieldCheck,
-  Bluetooth,
-  Usb,
-  Settings2,
-  Sparkles,
-  Loader2,
-} from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Order } from '../types/index.js';
-import { formatEGP, formatDateTime } from '../utils/formatters.js';
+import { formatEGP, formatDateTime, getPaymentMethodLabel } from '../utils/formatters.js';
 import {
   printThermalTicket,
   printViaWebSerial,
@@ -43,13 +32,6 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
   }, [order]);
 
   if (!order) return null;
-
-  const paymentLabels: Record<string, string> = {
-    cash: 'نقدي (كاش)',
-    card: 'فيزا / بطاقة (Card)',
-    transfer: 'تحويل (فودافون كاش / بنكي)',
-    split: 'دفع مجزأ',
-  };
 
   const qrValue =
     order.eta_share_url ||
@@ -110,23 +92,21 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
       <div className="relative w-full max-w-md bg-slate-900 border border-slate-700/80 rounded-3xl shadow-2xl p-5 sm:p-6 my-auto z-10 animate-in zoom-in-95 duration-200 max-h-[92vh] flex flex-col">
         {/* Header Bar */}
         <div className="flex items-center justify-between mb-3 border-b border-slate-800 pb-3 shrink-0">
-          <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
-            <Check className="w-4 h-4" />
+          <div className="text-emerald-400 font-bold text-sm">
             <span>تم إصدار الفاتورة بنجاح</span>
           </div>
 
           <button
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors"
+            className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors font-bold text-sm"
           >
-            <X className="w-4 h-4" />
+            ✕
           </button>
         </div>
 
         {/* Paper Size & Direct Options Selector */}
         <div className="flex items-center justify-between gap-2 mb-3 bg-slate-800/60 p-2 rounded-2xl border border-slate-700/50 text-xs shrink-0">
-          <div className="flex items-center gap-1.5 text-slate-300 font-semibold">
-            <Settings2 className="w-3.5 h-3.5 text-rose-400" />
+          <div className="text-slate-300 font-semibold">
             <span>مقاس الورق:</span>
           </div>
           <div className="flex items-center gap-1">
@@ -246,7 +226,7 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
               <div className="flex justify-between text-[10px] text-gray-500 pt-1">
                 <span>طريقة الدفع:</span>
                 <span className="font-semibold text-gray-700">
-                  {paymentLabels[order.payment_method] || order.payment_method}
+                  {getPaymentMethodLabel(order.payment_method)}
                 </span>
               </div>
             </div>
@@ -254,8 +234,7 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
             {/* ETA Egyptian Tax Authority Section */}
             {order.eta_uuid && (
               <div className="py-2 border-b border-dashed border-gray-400 text-center space-y-0.5 bg-emerald-50/80 rounded my-1.5 px-2 border border-emerald-300">
-                <div className="text-[10px] font-bold text-emerald-800 flex items-center justify-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                <div className="text-[10px] font-bold text-emerald-800">
                   <span>إيصال معتمد بمصلحة الضرائب المصرية (ETA)</span>
                 </div>
                 <div className="text-[9px] text-gray-700 font-mono break-all">
@@ -285,7 +264,9 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
               disabled={isPrinting}
               className="flex items-center justify-center gap-2 py-2.5 px-4 bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white rounded-2xl font-bold text-xs shadow-lg shadow-rose-600/25 active:scale-95 transition-all disabled:opacity-50"
             >
-              {isPrinting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+              {isPrinting && (
+                <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
+              )}
               <span>طباعة إيصال حراري ({paperWidth})</span>
             </button>
 
@@ -296,7 +277,6 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
                 disabled={isPrinting}
                 className="flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-2xl font-bold text-xs border border-slate-700 active:scale-95 transition-all disabled:opacity-50"
               >
-                <Usb className="w-4 h-4 text-cyan-400" />
                 <span>طباعة USB مباشرة</span>
               </button>
             ) : directSupport.bluetooth ? (
@@ -305,7 +285,6 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
                 disabled={isPrinting}
                 className="flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-2xl font-bold text-xs border border-slate-700 active:scale-95 transition-all disabled:opacity-50"
               >
-                <Bluetooth className="w-4 h-4 text-blue-400" />
                 <span>طباعة بلوتوث مباشرة</span>
               </button>
             ) : (
@@ -313,7 +292,6 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
                 onClick={() => window.print()}
                 className="flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-2xl font-bold text-xs border border-slate-700 active:scale-95 transition-all"
               >
-                <Sparkles className="w-4 h-4 text-amber-400" />
                 <span>طباعة عامة (Ctrl+P)</span>
               </button>
             )}

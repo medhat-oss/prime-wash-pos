@@ -12,6 +12,8 @@ export const formatEGP = (amount: number | string | null | undefined): string =>
   return `${Number(amount).toFixed(2)} ج.م`;
 };
 
+export const formatCurrency = formatEGP;
+
 /**
  * Format raw grams into readable grams or kilograms
  */
@@ -138,5 +140,38 @@ export const calculateTaxBreakdown = (
   const taxAmount = Number((totalPrice - subtotal).toFixed(2));
   return { subtotal, taxAmount };
 };
+
+/**
+ * Unified Payment Method Arabic Labels
+ */
+export const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  cash: 'نقدي (كاش)',
+  card: 'بطاقة ائتمان / فيزا (Card)',
+  transfer: 'محفظة إلكترونية / إنستاباي',
+  split: 'دفع مجزأ',
+};
+
+/**
+ * Resolves localized payment method label with fallback
+ */
+export const getPaymentMethodLabel = (method: string | null | undefined): string => {
+  if (!method) return '-';
+  return PAYMENT_METHOD_LABELS[method] || method;
+};
+
+/**
+ * HTML Entity Escaper for Safe Thermal, Document & Iframe Rendering
+ * Neutralizes potential XSS when interpolating dynamic user input into raw HTML templates.
+ */
+export const escapeHtml = (str: string | number | null | undefined): string => {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+};
+
 
 

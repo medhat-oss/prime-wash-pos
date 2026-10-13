@@ -23,7 +23,7 @@ export async function getActiveAdminPin(): Promise<string> {
   } catch {
     // fallback if table is not yet migrated
   }
-  return (process.env.ADMIN_PIN || '1234').trim();
+  return (process.env.ADMIN_PIN || '').trim();
 }
 
 export function updateCachedAdminPin(newPin: string) {
@@ -58,7 +58,22 @@ export const requireAdminAuth = async (req: Request, res: Response, next: NextFu
       );
     }
 
-    if (!safeTimingEqual(adminPinHeader, configuredAdminPin)) {
+    let isAuthorized = safeTimingEqual(adminPinHeader, configuredAdminPin);
+
+    if (!isAuthorized) {
+      try {
+        const ownerRes = await query(
+          `SELECT pin_code FROM employees 
+           WHERE (system_role = 'owner' OR role ILIKE '%مالك%' OR name = 'مستر فتحي') 
+             AND status = 'active'`
+        );
+        isAuthorized = ownerRes.rows.some((o: any) =>
+          safeTimingEqual(adminPinHeader, String(o.pin_code || '').trim())
+        );
+      } catch {}
+    }
+
+    if (!isAuthorized) {
       adminPinRateLimiter.recordFailure(ip);
       return next(
         new AppError(

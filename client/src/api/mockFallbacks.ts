@@ -30,11 +30,12 @@ export const FALLBACK_EMPLOYEES: Employee[] = [
     id: '1ea66a23-e26c-4872-bbde-f178f7e32b92',
     name: 'مستر فتحي',
     role: 'مالك المنشأة / المدير العام',
+    system_role: 'owner',
     phone: '01000000000',
-    hourly_rate: 100,
-    overtime_hourly_rate: 100,
-    target_weekly_days: 6,
-    target_weekly_hours: 48,
+    hourly_rate: 0,
+    overtime_hourly_rate: 0,
+    target_weekly_days: 7,
+    target_weekly_hours: 0,
     weekly_off_day: 'الجمعة',
     is_paid_weekly_off: true,
     pin_code: '1000',
@@ -47,6 +48,7 @@ export const FALLBACK_EMPLOYEES: Employee[] = [
     name: 'حسن علي مهران',
     phone: '01012345678',
     role: 'كاشير واستقبال',
+    system_role: 'cashier',
     hourly_rate: 40,
     overtime_hourly_rate: 40,
     target_weekly_days: 6,
@@ -62,7 +64,8 @@ export const FALLBACK_EMPLOYEES: Employee[] = [
     id: 'a1de5f26-6440-49a2-ab38-4e20f03b93a6',
     name: 'أحمد محمود السعيد',
     phone: '01123456789',
-    role: 'فني غسيل وتلميع',
+    role: 'كاشير وفني غسيل',
+    system_role: 'cashier',
     hourly_rate: 35,
     overtime_hourly_rate: 35,
     target_weekly_days: 6,
@@ -78,6 +81,7 @@ export const FALLBACK_EMPLOYEES: Employee[] = [
     id: '478ec10b-2715-4db8-a432-ea942440f99e',
     name: 'كريم عبد العال',
     role: 'مشرف تشغيل ومراقبة جودة',
+    system_role: 'manager',
     phone: '01555555555',
     hourly_rate: 45,
     overtime_hourly_rate: 45,
@@ -94,6 +98,7 @@ export const FALLBACK_EMPLOYEES: Employee[] = [
     id: 'aafba11f-7183-418c-a635-f9aa5661f48f',
     name: 'محمود طارق إبراهيم',
     role: 'فني نانو سيراميك وحماية',
+    system_role: 'worker',
     phone: '01234567890',
     hourly_rate: 35,
     overtime_hourly_rate: 35,
@@ -299,6 +304,31 @@ export const FALLBACK_DASHBOARD_STATS: DashboardStats = {
   generated_at: new Date().toISOString(),
 };
 
+export const createZeroDashboardStats = (): DashboardStats => ({
+  today: {
+    today_orders_count: 0,
+    today_revenue: 0,
+    today_completed_washes: 0,
+    today_in_progress: 0,
+  },
+  all_time: {
+    total_all_time_orders: 0,
+    total_all_time_revenue: 0,
+  },
+  inventory: {
+    low_stock_count: 0,
+    low_stock_items: [],
+  },
+  hr: {
+    active_employees_count: 0,
+    attended_today_count: 0,
+  },
+  top_services: [],
+  recent_orders: [],
+  cashier_sales: [],
+  generated_at: new Date().toISOString(),
+});
+
 export const FALLBACK_TAX_SETTINGS: TaxSettings = {
   is_enabled: false,
   eta_sync_enabled: false,
@@ -307,6 +337,22 @@ export const FALLBACK_TAX_SETTINGS: TaxSettings = {
   branch_code: '0',
   pos_serial: 'POS-PRIME-01',
 };
+
+export const createZeroTaxStats = (): TaxStats => ({
+  orders: {
+    total_orders: 0,
+    synced_valid_count: 0,
+    pending_count: 0,
+    failed_count: 0,
+    not_synced_count: 0,
+  },
+  queue: {
+    total_queue_items: 0,
+    queue_pending: 0,
+    queue_processing: 0,
+    queue_failed: 0,
+  },
+});
 
 export const FALLBACK_TAX_STATS: TaxStats = {
   orders: {
@@ -404,12 +450,16 @@ export const FALLBACK_PNL_SUMMARY: PnLSummary = {
   financials: {
     gross_revenue: 4280,
     net_taxable_revenue: 3754.39,
+    operating_revenue: 4280,
+    effective_vat_deducted: 0,
+    is_live_tax_mode: false,
+    tax_environment: 'preprod',
     total_vat_collected: 525.61,
     total_salaries: 850,
     total_expenses: 400,
     total_operating_costs: 1762,
-    net_profit: 1992.39,
-    profit_margin: 53.07,
+    net_profit: 2518.00,
+    profit_margin: 58.83,
     is_profitable: true,
   },
   revenue_metrics: {
@@ -425,12 +475,23 @@ export const FALLBACK_PNL_SUMMARY: PnLSummary = {
     base_salaries: 800,
     overtime_paid: 50,
     bonuses_paid: 0,
+    disbursed_salaries: 850,
+    disbursed_payouts_count: 1,
+    accrued_salaries: 850,
+    total_accrued_payable: 850,
+    total_pending_debts: 0,
+    active_staff_count: 4,
+    unpaid_accrued_salaries: 0,
   },
   expenses_metrics: {
     expenses_count: 2,
     cash_expenses: 400,
     card_expenses: 0,
     transfer_expenses: 0,
+    fixed_expenses_total: 0,
+    variable_expenses_total: 400,
+    fixed_expenses_count: 0,
+    variable_expenses_count: 2,
     categories_breakdown: [
       { category: 'أدوات ومواد نظافة', count: 1, total_amount: 250, percentage: 62.5 },
       { category: 'بوفيه ومصاريف إدارية', count: 1, total_amount: 150, percentage: 37.5 },
@@ -445,4 +506,64 @@ export const FALLBACK_PNL_SUMMARY: PnLSummary = {
     { month: '2026-08', revenue: 48000, payroll: 10500, expenses: 5200, net_profit: 32300 },
   ],
   generated_at: new Date().toISOString(),
+};
+
+export const createZeroPnLSummary = (year?: number, month?: number): PnLSummary => {
+  const y = year || new Date().getFullYear();
+  const m = month || (new Date().getMonth() + 1);
+  const period = `${y}-${String(m).padStart(2, '0')}`;
+  return {
+    period,
+    year: y,
+    month: m,
+    financials: {
+      gross_revenue: 0,
+      net_taxable_revenue: 0,
+      operating_revenue: 0,
+      effective_vat_deducted: 0,
+      is_live_tax_mode: false,
+      tax_environment: 'preprod',
+      total_vat_collected: 0,
+      total_salaries: 0,
+      total_expenses: 0,
+      total_operating_costs: 0,
+      net_profit: 0,
+      profit_margin: 0,
+      is_profitable: true,
+    },
+    revenue_metrics: {
+      total_orders: 0,
+      valid_orders: 0,
+      cancelled_orders: 0,
+      cash_revenue: 0,
+      card_revenue: 0,
+      transfer_revenue: 0,
+    },
+    payroll_metrics: {
+      payouts_count: 0,
+      base_salaries: 0,
+      overtime_paid: 0,
+      bonuses_paid: 0,
+      disbursed_salaries: 0,
+      disbursed_payouts_count: 0,
+      accrued_salaries: 0,
+      total_accrued_payable: 0,
+      total_pending_debts: 0,
+      active_staff_count: 0,
+      unpaid_accrued_salaries: 0,
+    },
+    expenses_metrics: {
+      expenses_count: 0,
+      cash_expenses: 0,
+      card_expenses: 0,
+      transfer_expenses: 0,
+      fixed_expenses_total: 0,
+      variable_expenses_total: 0,
+      fixed_expenses_count: 0,
+      variable_expenses_count: 0,
+      categories_breakdown: [],
+    },
+    six_months_trend: [],
+    generated_at: new Date().toISOString(),
+  };
 };

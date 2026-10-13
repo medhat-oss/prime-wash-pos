@@ -219,6 +219,27 @@ export class InventoryService {
     }
 
     const res = await query(sql, params);
+    
+    // Insert audit log in inventory_transactions
+    try {
+      await query(
+        `INSERT INTO inventory_transactions (
+          inventory_item_id, transaction_type, quantity_grams,
+          previous_stock_grams, new_stock_grams, cost_impact, notes
+        ) VALUES ($1, 'restock', $2, $3, $4, $5, $6)`,
+        [
+          id,
+          gramsToAdd,
+          currentItem.current_stock_grams,
+          res.rows[0].current_stock_grams,
+          Number((gramsToAdd * (newCostPerGram ?? currentItem.cost_per_gram ?? 0)).toFixed(2)),
+          `توريد ${gramsToAdd.toLocaleString()} جرام لمادة ${currentItem.name}`,
+        ]
+      );
+    } catch (e: any) {
+      console.warn('[Inventory Restock Audit Warning]', e.message);
+    }
+
     return {
       item: res.rows[0],
       addedGrams: gramsToAdd,

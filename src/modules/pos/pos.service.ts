@@ -14,6 +14,9 @@ export interface CreateOrderInput {
   assigned_employee_id?: string;
   status?: 'pending' | 'in_progress' | 'completed' | 'cancelled';
   notes?: string;
+  shift_id?: string;
+  cashier_id?: string;
+  cashier_name?: string;
 }
 
 export class PosService {
@@ -133,7 +136,23 @@ export class PosService {
         }
       }
 
-      // 7. Insert order
+      // 7. Auto resolve active shift if not passed
+      let orderShiftId = data.shift_id || null;
+      let orderCashierId = data.cashier_id || null;
+      let orderCashierName = data.cashier_name ? data.cashier_name.trim() : null;
+
+      if (!orderShiftId) {
+        const activeShiftCheck = await client.query(
+          `SELECT id, cashier_id, cashier_name FROM shifts WHERE status = 'active' ORDER BY shift_start DESC LIMIT 1`
+        );
+        if (activeShiftCheck.rows.length > 0) {
+          orderShiftId = activeShiftCheck.rows[0].id;
+          if (!orderCashierId) orderCashierId = activeShiftCheck.rows[0].cashier_id;
+          if (!orderCashierName) orderCashierName = activeShiftCheck.rows[0].cashier_name;
+        }
+      }
+
+      // 8. Insert order
       const orderStatus = data.status || 'completed';
       const paymentMethod = data.payment_method || 'cash';
 
@@ -151,8 +170,11 @@ export class PosService {
           payment_method, 
           status, 
           assigned_employee_id, 
-          notes
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          notes,
+          shift_id,
+          cashier_id,
+          cashier_name
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         RETURNING 
           id, 
           order_code, 
@@ -167,7 +189,10 @@ export class PosService {
           payment_method, 
           status, 
           assigned_employee_id, 
-          notes, 
+          notes,
+          shift_id,
+          cashier_id,
+          cashier_name,
           created_at, 
           updated_at`,
         [
@@ -184,10 +209,32 @@ export class PosService {
           orderStatus,
           data.assigned_employee_id || null,
           data.notes ? data.notes.trim() : null,
+          orderShiftId,
+          orderCashierId,
+          orderCashierName,
         ]
       );
 
       const createdOrder = insertOrderRes.rows[0];
+
+      // Insert audit trail logs in inventory_transactions
+      for (const item of deductedItems) {
+        await client.query(
+          `INSERT INTO inventory_transactions (
+            inventory_item_id, order_id, transaction_type, quantity_grams,
+            previous_stock_grams, new_stock_grams, cost_impact, notes
+          ) VALUES ($1, $2, 'deduction_order', $3, $4, $5, $6, $7)`,
+          [
+            item.inventory_item_id,
+            createdOrder.id,
+            item.deducted_grams,
+            Number((item.remaining_stock_grams + item.deducted_grams).toFixed(2)),
+            item.remaining_stock_grams,
+            0,
+            `خصم مواد استهلاك لطلب رقم ${createdOrder.order_code}`,
+          ]
+        );
+      }
 
       // Commit atomic transaction
       await client.query('COMMIT');
@@ -241,6 +288,7 @@ export class PosService {
     status?: string;
     date?: string;
     employee_id?: string;
+    shift_id?: string;
     limit?: number;
     offset?: number;
   }) {
@@ -262,6 +310,9 @@ export class PosService {
         o.status,
         o.assigned_employee_id,
         e.name AS assigned_employee_name,
+        o.shift_id,
+        o.cashier_id,
+        o.cashier_name,
         o.eta_uuid,
         o.eta_submission_id,
         o.eta_status,
@@ -291,6 +342,10 @@ export class PosService {
     if (filters.employee_id) {
       sql += ` AND o.assigned_employee_id = $${idx++}`;
       params.push(filters.employee_id);
+    }
+    if (filters.shift_id) {
+      sql += ` AND o.shift_id = $${idx++}`;
+      params.push(filters.shift_id);
     }
 
     sql += ` ORDER BY o.created_at DESC`;
@@ -328,6 +383,9 @@ export class PosService {
         o.status,
         o.assigned_employee_id,
         e.name AS assigned_employee_name,
+        o.shift_id,
+        o.cashier_id,
+        o.cashier_name,
         o.eta_uuid,
         o.eta_submission_id,
         o.eta_status,
@@ -433,6 +491,22 @@ export class PosService {
         [updatedNotes, id]
       );
 
+      // Insert audit logs for restored inventory
+      for (const item of restoredItems) {
+        await client.query(
+          `INSERT INTO inventory_transactions (
+            inventory_item_id, order_id, transaction_type, quantity_grams,
+            cost_impact, notes
+          ) VALUES ($1, $2, 'cancel_restore', $3, 0, $4)`,
+          [
+            item.inventory_item_id,
+            id,
+            item.restored_grams,
+            `إعادة المواد الخام للمخزن لإلغاء طلب رقم ${order.order_code || id}`,
+          ]
+        );
+      }
+
       await client.query('COMMIT');
 
       return {
@@ -446,6 +520,428 @@ export class PosService {
     } finally {
       client.release();
     }
+  }
+
+  // ==========================================
+  // Active Shift & Cashier Session Management (PostgreSQL Neon DB)
+  // ==========================================
+
+  static async getActiveShift() {
+    const shiftRes = await query(
+      `SELECT 
+        id,
+        id AS shift_id,
+        shift_code,
+        cashier_id,
+        cashier_name,
+        COALESCE(cashier_role, 'كاشير واستقبال') AS cashier_role,
+        shift_start,
+        opening_cash::float AS opening_cash,
+        active_device_id,
+        status,
+        created_at,
+        updated_at
+       FROM shifts
+       WHERE status = 'active'
+       ORDER BY shift_start DESC
+       LIMIT 1`
+    );
+
+    if (shiftRes.rows.length === 0) {
+      return null;
+    }
+
+    const shift = shiftRes.rows[0];
+
+    // Auto-archive stale zombie shift older than 24 hours
+    const shiftStartTime = new Date(shift.shift_start || shift.created_at).getTime();
+    const ageHours = (Date.now() - shiftStartTime) / (1000 * 60 * 60);
+
+    if (ageHours > 24) {
+      await query(
+        `UPDATE shifts
+         SET status = 'closed',
+             shift_end = CURRENT_TIMESTAMP,
+             closing_notes = 'إغلاق تلقائي لانتهاء صلاحية الجلسة (>24 ساعة)',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [shift.id]
+      );
+      return null;
+    }
+
+    // Compute live metrics from orders associated with this active shift
+    let m = {
+      total_orders: 0,
+      gross_sales: 0,
+      cash_sales: 0,
+      card_sales: 0,
+      transfer_sales: 0,
+    };
+
+    try {
+      const metricsRes = await query(
+        `SELECT 
+          COUNT(*)::int AS total_orders,
+          COALESCE(SUM(CASE WHEN status != 'cancelled' THEN total_amount ELSE 0 END), 0)::float AS gross_sales,
+          COALESCE(SUM(CASE WHEN status != 'cancelled' AND payment_method = 'cash' THEN total_amount ELSE 0 END), 0)::float AS cash_sales,
+          COALESCE(SUM(CASE WHEN status != 'cancelled' AND payment_method = 'card' THEN total_amount ELSE 0 END), 0)::float AS card_sales,
+          COALESCE(SUM(CASE WHEN status != 'cancelled' AND payment_method IN ('transfer', 'wallet') THEN total_amount ELSE 0 END), 0)::float AS transfer_sales
+         FROM orders
+         WHERE ((shift_id IS NOT NULL AND shift_id = $1) OR (cashier_id = $3 AND created_at >= $2))`,
+        [shift.id, shift.shift_start, shift.cashier_id]
+      );
+      if (metricsRes.rows.length > 0) {
+        m = metricsRes.rows[0];
+      }
+    } catch (metricsErr) {
+      console.warn('[Non-Fatal Metrics Query Warning in pos.service.ts]', metricsErr);
+    }
+
+    return {
+      ...shift,
+      id: shift.id,
+      shift_id: shift.id,
+      name: shift.cashier_name,
+      role: shift.cashier_role,
+      active_device_id: shift.active_device_id || null,
+      gross_sales: m.gross_sales,
+      cash_sales: m.cash_sales,
+      card_sales: m.card_sales,
+      transfer_sales: m.transfer_sales,
+      total_orders: m.total_orders,
+    };
+  }
+
+  static async startActiveShift(data: {
+    shift_id?: string;
+    shift_code?: string;
+    cashier_id: string;
+    cashier_name: string;
+    cashier_role?: string;
+    shift_start?: string;
+    opening_cash?: number;
+    device_id?: string;
+    active_device_id?: string;
+  }) {
+    const cashierId = data.cashier_id;
+    const cashierName = (data.cashier_name || 'الكاشير').trim();
+    const cashierRole = (data.cashier_role || 'كاشير واستقبال').trim();
+    const shiftStart = data.shift_start || new Date().toISOString();
+    const openingCash = Number(data.opening_cash) || 0;
+    const deviceId = (data.device_id || data.active_device_id || '').trim() || null;
+    const todayStr = new Date(shiftStart).toISOString().slice(0, 10);
+
+    // 1. Check for any currently active shift in DB (Single Active Shift Rule)
+    const activeShiftsRes = await query(
+      `SELECT s.*, COALESCE(s.cashier_name, 'الكاشير') AS active_cashier_name
+       FROM shifts s
+       WHERE s.status = 'active'
+       ORDER BY s.shift_start DESC
+       LIMIT 1`
+    );
+
+    if (activeShiftsRes.rows.length > 0) {
+      const existing = activeShiftsRes.rows[0];
+      const existingStartTime = new Date(existing.shift_start || existing.created_at).getTime();
+      const existingAgeHours = (Date.now() - existingStartTime) / (1000 * 60 * 60);
+
+      if (existingAgeHours > 24) {
+        // Auto-archive stale zombie shift older than 24 hours
+        await query(
+          `UPDATE shifts
+           SET status = 'closed',
+               shift_end = CURRENT_TIMESTAMP,
+               closing_notes = 'إغلاق تلقائي لانتهاء صلاحية الجلسة (>24 ساعة)',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1`,
+          [existing.id]
+        );
+      } else {
+        const normalizeStr = (s: any) => String(s || '').trim().toLowerCase();
+        const normalizeArabic = (s: any) =>
+          normalizeStr(s)
+            .replace(/[أإآ]/g, 'ا')
+            .replace(/ة/g, 'ه')
+            .replace(/[\u064B-\u065F]/g, '') // remove Arabic tashkeel/diacritics
+            .replace(/\s+/g, ' ');
+
+        const normReqId = normalizeStr(cashierId);
+        const normExistId = normalizeStr(existing.cashier_id);
+        const normReqName = normalizeArabic(cashierName);
+        const normExistName = normalizeArabic(existing.cashier_name || existing.active_cashier_name);
+
+        const isSameCashier =
+          (normReqId && normExistId && normReqId === normExistId) ||
+          (normReqName && normExistName && normReqName === normExistName);
+
+        if (!isSameCashier) {
+          // Strictly reject conflicting cashier shift with 409 Conflict
+          throw new AppError(
+            `يوجد شفت كاشير نشط بالفعل للموظف: (${existing.active_cashier_name}). يجب تقفيل الشفت الحالي أولاً قبل بدء شفت جديد.`,
+            409,
+            {
+              error: 'active_shift_exists',
+              active_cashier_name: existing.active_cashier_name,
+              active_cashier_id: existing.cashier_id,
+              shift_id: existing.id,
+              shift_code: existing.shift_code,
+            }
+          );
+        }
+
+        // Same cashier resuming / transferring session to this device:
+        let resolvedDeviceId = existing.active_device_id;
+        if (deviceId && deviceId !== existing.active_device_id) {
+          await query(
+            `UPDATE shifts
+             SET active_device_id = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2`,
+            [deviceId, existing.id]
+          );
+          resolvedDeviceId = deviceId;
+        }
+
+        return {
+          ...existing,
+          id: existing.id,
+          shift_id: existing.id,
+          cashier_id: existing.cashier_id,
+          cashier_name: existing.cashier_name,
+          cashier_role: existing.cashier_role,
+          name: existing.cashier_name,
+          role: existing.cashier_role,
+          active_device_id: resolvedDeviceId,
+          opening_cash: Number(existing.opening_cash) || 0,
+          status: 'active',
+          updated_at: new Date().toISOString(),
+        };
+      }
+    }
+
+    const shiftCode =
+      data.shift_code ||
+      data.shift_id ||
+      `SHIFT-${todayStr.replace(/-/g, '')}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    const insertRes = await query(
+      `INSERT INTO shifts (
+        shift_code, cashier_id, cashier_name, cashier_role, shift_start, opening_cash, active_device_id, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+      RETURNING id, shift_code, cashier_id, cashier_name, cashier_role, shift_start, opening_cash::float AS opening_cash, active_device_id, status, created_at, updated_at`,
+      [shiftCode, cashierId, cashierName, cashierRole, shiftStart, openingCash, deviceId]
+    );
+    const activeShiftRecord = insertRes.rows[0];
+
+    // 2. Ensure auto-attendance check-in for the cashier in Neon DB attendance table
+    if (cashierId) {
+      try {
+        const attCheck = await query(
+          `SELECT id FROM attendance WHERE employee_id = $1 AND work_date = $2 AND check_out IS NULL LIMIT 1`,
+          [cashierId, todayStr]
+        );
+        if (attCheck.rows.length === 0) {
+          await query(
+            `INSERT INTO attendance (
+              employee_id, work_date, check_in, actual_hours, overtime_hours, deducted_hours, notes
+            ) VALUES ($1, $2, $3, 0, 0, 0, $4)`,
+            [cashierId, todayStr, shiftStart, 'تسجيل حضور تلقائي عند بدء شفت الكاشير']
+          );
+        }
+      } catch (attErr: any) {
+        console.warn('[Attendance Auto-Clock In Error]', attErr.message);
+      }
+    }
+
+    return {
+      ...activeShiftRecord,
+      id: activeShiftRecord.id,
+      shift_id: activeShiftRecord.id,
+      cashier_id: activeShiftRecord.cashier_id,
+      cashier_name: activeShiftRecord.cashier_name,
+      cashier_role: activeShiftRecord.cashier_role,
+      name: activeShiftRecord.cashier_name,
+      role: activeShiftRecord.cashier_role,
+      active_device_id: activeShiftRecord.active_device_id,
+      status: 'active',
+      updated_at: new Date().toISOString(),
+    };
+  }
+
+  static async closeActiveShift(shiftRecord: any) {
+    const shiftId = shiftRecord?.id || shiftRecord?.shift_id;
+    const shiftCode = shiftRecord?.shift_code;
+    const shiftEnd = shiftRecord?.shift_end || new Date().toISOString();
+    const grossSales = Number(shiftRecord?.gross_sales) || 0;
+    const cashSales = Number(shiftRecord?.cash_sales) || 0;
+    const cardSales = Number(shiftRecord?.card_sales) || 0;
+    const transferSales = Number(shiftRecord?.transfer_sales) || 0;
+    const totalOrders = Number(shiftRecord?.total_orders) || 0;
+    const expectedCash = Number(shiftRecord?.expected_cash) || 0;
+    const actualCash = Number(shiftRecord?.actual_cash) || 0;
+    const variance = Number(shiftRecord?.variance) || 0;
+    const closingNotes = shiftRecord?.closing_notes || null;
+    const approvedBy = shiftRecord?.approved_by || 'الإدارة';
+    const isEndOfDay = !!shiftRecord?.is_end_of_day;
+    const workersBreakdown = JSON.stringify(shiftRecord?.active_workers_breakdown || []);
+
+    const updateRes = await query(
+      `UPDATE shifts
+       SET 
+         status = 'closed',
+         shift_end = $1,
+         gross_sales = $2,
+         cash_sales = $3,
+         card_sales = $4,
+         transfer_sales = $5,
+         total_orders = $6,
+         expected_cash = $7,
+         actual_cash = $8,
+         variance = $9,
+         closing_notes = $10,
+         approved_by = $11,
+         is_end_of_day = $12,
+         active_workers_breakdown = $13,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE (
+         ($14 != '' AND id::text = $14)
+         OR ($15 != '' AND shift_code = $15)
+         OR status = 'active'
+       )
+       RETURNING *`,
+      [
+        shiftEnd,
+        grossSales,
+        cashSales,
+        cardSales,
+        transferSales,
+        totalOrders,
+        expectedCash,
+        actualCash,
+        variance,
+        closingNotes,
+        approvedBy,
+        isEndOfDay,
+        workersBreakdown,
+        String(shiftId || ''),
+        String(shiftCode || ''),
+      ]
+    );
+
+    // Auto clock-out cashier or all open attendance if end of day
+    const cashierId = shiftRecord?.cashier_id || updateRes.rows[0]?.cashier_id;
+    if (isEndOfDay) {
+      try {
+        const openAtts = await query(`SELECT id, employee_id, check_in FROM attendance WHERE check_out IS NULL`);
+        for (const att of openAtts.rows) {
+          const inTime = new Date(att.check_in).getTime();
+          const outTime = new Date(shiftEnd).getTime();
+          const actualHours = Number((Math.max(outTime - inTime, 0) / (1000 * 60 * 60)).toFixed(2));
+          await query(
+            `UPDATE attendance SET check_out = $1, actual_hours = $2, notes = COALESCE(notes, '') || ' | تقفيل نهاية اليوم' WHERE id = $3`,
+            [shiftEnd, actualHours, att.id]
+          );
+        }
+      } catch (attCloseErr: any) {
+        console.warn('[End-Of-Day Attendance Clock-out Error]', attCloseErr.message);
+      }
+    } else if (cashierId) {
+      try {
+        const openAtt = await query(
+          `SELECT id, check_in FROM attendance WHERE employee_id = $1 AND check_out IS NULL ORDER BY check_in DESC LIMIT 1`,
+          [cashierId]
+        );
+        if (openAtt.rows.length > 0) {
+          const checkInDate = new Date(openAtt.rows[0].check_in);
+          const outDate = new Date(shiftEnd);
+          const diffMs = Math.max(outDate.getTime() - checkInDate.getTime(), 0);
+          const actualHours = Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+          await query(
+            `UPDATE attendance SET check_out = $1, actual_hours = $2, notes = COALESCE(notes, '') || ' | تقفيل وردية الكاشير' WHERE id = $3`,
+            [shiftEnd, actualHours, openAtt.rows[0].id]
+          );
+        }
+      } catch (attCloseErr: any) {
+        console.warn('[Attendance Auto-Clock Out Error]', attCloseErr.message);
+      }
+    }
+
+    return {
+      success: true,
+      message: 'تم إقفال الوردية النشطة وأرشفتها بنجاح في قاعدة البيانات',
+      data: updateRes.rows[0] || shiftRecord,
+    };
+  }
+
+  static async getClosedShifts(filters?: {
+    startDate?: string;
+    endDate?: string;
+    cashierId?: string;
+    search?: string;
+  }) {
+    let sql = `
+      SELECT 
+        id,
+        shift_code,
+        cashier_id,
+        cashier_name,
+        COALESCE(cashier_role, 'كاشير واستقبال') AS cashier_role,
+        shift_start,
+        shift_end,
+        opening_cash::float AS opening_cash,
+        gross_sales::float AS gross_sales,
+        cash_sales::float AS cash_sales,
+        card_sales::float AS card_sales,
+        transfer_sales::float AS transfer_sales,
+        total_orders::int AS total_orders,
+        expected_cash::float AS expected_cash,
+        actual_cash::float AS actual_cash,
+        variance::float AS variance,
+        status,
+        closing_notes,
+        approved_by,
+        is_end_of_day,
+        active_workers_breakdown,
+        created_at,
+        updated_at
+      FROM shifts
+      WHERE status = 'closed'
+    `;
+
+    const params: any[] = [];
+    let idx = 1;
+
+    if (filters?.cashierId) {
+      sql += ` AND cashier_id = $${idx++}`;
+      params.push(filters.cashierId);
+    }
+    if (filters?.startDate) {
+      sql += ` AND (shift_start >= $${idx} OR created_at >= $${idx})`;
+      params.push(filters.startDate);
+      idx++;
+    }
+    if (filters?.endDate) {
+      sql += ` AND (shift_end <= $${idx} OR created_at <= $${idx})`;
+      params.push(filters.endDate);
+      idx++;
+    }
+    if (filters?.search && filters.search.trim()) {
+      sql += ` AND (LOWER(shift_code) LIKE $${idx} OR LOWER(cashier_name) LIKE $${idx} OR LOWER(closing_notes) LIKE $${idx})`;
+      params.push(`%${filters.search.trim().toLowerCase()}%`);
+      idx++;
+    }
+
+    sql += ` ORDER BY shift_start DESC LIMIT 100`;
+
+    const res = await query(sql, params);
+    return res.rows;
+  }
+
+  static async deleteClosedShift(id: string) {
+    const shiftIdStr = String(id || '');
+    await query(`UPDATE orders SET shift_id = NULL WHERE shift_id::text = $1`, [shiftIdStr]);
+    await query(`DELETE FROM shifts WHERE id::text = $1 OR shift_code = $1`, [shiftIdStr]);
+    return { success: true, message: 'تم حذف سجل الوردية بنجاح من قاعدة البيانات' };
   }
 }
 

@@ -1,14 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#06b6d4" />
-      <stop offset="100%" stop-color="#2563eb" />
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18181b" />
+      <stop offset="100%" stop-color="#09090b" />
     </linearGradient>
+    <linearGradient id="crimsonGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff2e2e" />
+      <stop offset="50%" stop-color="#bd0000" />
+      <stop offset="100%" stop-color="#700000" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#bd0000" flood-opacity="0.5" />
+    </filter>
   </defs>
-  <rect width="512" height="512" rx="128" fill="url(#grad)" />
-  <path d="M140 330 h232 c16 0 28 -12 28 -28 v-50 c0 -18 -12 -34 -30 -38 l-36 -12 -38 -52 c-8 -11 -20 -18 -34 -18 H186 c-14 0 -26 7 -34 18 l-38 52 -36 12 c-18 4 -30 20 -30 38 v50 c0 16 12 28 28 28 h24" fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" />
-  <circle cx="170" cy="340" r="36" fill="#ffffff" />
-  <circle cx="342" cy="340" r="36" fill="#ffffff" />
-  <path d="M210 340 h92" stroke="#ffffff" stroke-width="26" stroke-linecap="round" />
-  <path d="M256 90 v40 M210 100 l20 35 M302 100 l-20 35" stroke="#ffffff" stroke-width="18" stroke-linecap="round" />
+  
+  <!-- Modern Dark Premium Badge Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  <rect width="504" height="504" x="4" y="4" rx="108" fill="none" stroke="#bd0000" stroke-width="6" stroke-opacity="0.4" />
+  
+  <!-- Prime Wash Red Emblems / Layers -->
+  <g transform="translate(64, 64) scale(0.75)" filter="url(#glow)">
+    <!-- Top Diamond / Layer -->
+    <path d="M256 32L48 144l208 112 208-112-208-112z" fill="url(#crimsonGrad)" stroke="#ff4d4d" stroke-width="4" />
+    <!-- Middle Layer Wave -->
+    <path d="M48 260l208 112 208-112" fill="none" stroke="url(#crimsonGrad)" stroke-width="42" stroke-linecap="round" stroke-linejoin="round" />
+    <!-- Bottom Layer Wave -->
+    <path d="M48 376l208 112 208-112" fill="none" stroke="url(#crimsonGrad)" stroke-width="42" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
 </svg>

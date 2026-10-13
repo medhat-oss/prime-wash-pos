@@ -22,13 +22,13 @@ export const defaultTheme: Partial<PosSettings> = {
 export const applyThemeToRoot = (settings?: Partial<PosSettings>) => {
   if (typeof document === 'undefined') return;
 
-  const primary = settings?.primary_color || defaultTheme.primary_color || '#06b6d4';
-  const secondary = settings?.secondary_color || defaultTheme.secondary_color || '#3b82f6';
-  const accent = settings?.accent_color || defaultTheme.accent_color || '#10b981';
-  const cardBg = settings?.card_bg_color || defaultTheme.card_bg_color || 'rgba(15, 23, 42, 0.75)';
-  const borderColor = settings?.border_color || defaultTheme.border_color || 'rgba(51, 65, 85, 0.6)';
-  const appBg = settings?.app_bg_color || defaultTheme.app_bg_color || '#090d16';
-  const headerBg = settings?.header_bg_color || defaultTheme.header_bg_color || 'rgba(15, 23, 42, 0.85)';
+  const primary = settings?.primary_color || defaultTheme.primary_color || '#bd0000';
+  const secondary = settings?.secondary_color || defaultTheme.secondary_color || '#570505';
+  const accent = settings?.accent_color || defaultTheme.accent_color || '#bd0000';
+  const cardBg = settings?.card_bg_color || defaultTheme.card_bg_color || 'rgba(66, 0, 0, 0.82)';
+  const borderColor = settings?.border_color || defaultTheme.border_color || 'rgba(194, 0, 0, 0.70)';
+  const appBg = settings?.app_bg_color || defaultTheme.app_bg_color || '#000000';
+  const headerBg = settings?.header_bg_color || defaultTheme.header_bg_color || 'rgba(46, 0, 0, 0.85)';
 
   const root = document.documentElement;
   root.style.setProperty('--color-primary', primary);

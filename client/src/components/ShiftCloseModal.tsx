@@ -1,37 +1,20 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import {
-  Printer,
-  CheckCircle2,
-  AlertTriangle,
-  Banknote,
-  CreditCard,
-  Smartphone,
-  Car,
-  Clock,
-  User,
-  XCircle,
-  FileSpreadsheet,
-  Coins,
-  ShieldAlert,
-  Loader2,
-  Lock,
-  KeyRound,
-  ShieldCheck,
-} from 'lucide-react';
 import Modal from './Modal.js';
-import { Employee, Order } from '../types/index.js';
-import { posApi } from '../api/client.js';
+import { Employee, Order, ClosedShift, ActiveShiftSession } from '../types/index.js';
+import { posApi, getStoredAdminPin } from '../api/client.js';
 import { formatEGP, formatDateTime } from '../utils/formatters.js';
 import { clockOutAllActiveEmployees, clockOutSingleCashier } from '../utils/attendanceStorage.js';
-import { getStoredShiftOrders, clearStoredShiftOrders } from '../utils/orderStorage.js';
+import { getStoredShiftOrders, clearStoredShiftOrders, deduplicateOrders } from '../utils/orderStorage.js';
+import { appendClosedShift, saveStoredActiveShiftSession, saveLocalCashierSession } from '../utils/shiftStorage.js';
+import { notifyShiftClose } from '../utils/telegramNotifications.js';
 import { useToast } from './Toast.js';
 
 
 interface ShiftCloseModalProps {
   isOpen: boolean;
   onClose: () => void;
-  cashier: { id: string; name: string; role: string; shift_start: string } | null;
-  employees: Employee[];
+  cashier: ActiveShiftSession | null;
+  employees?: Employee[];
   onShiftClosed: () => void;
 }
 
@@ -39,7 +22,7 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
   isOpen,
   onClose,
   cashier,
-  employees,
+  employees = [],
   onShiftClosed,
 }) => {
   const toast = useToast();
@@ -63,24 +46,43 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
     const fetchShiftOrders = async () => {
       try {
         setLoading(true);
-        // 1. Get shift orders stored in localStorage
-        const storedShiftOrders = getStoredShiftOrders(cashier.shift_start);
+        const cashierId = cashier.cashier_id || cashier.id;
+        const shiftId = cashier.shift_id || cashier.id;
+        const shiftCode = cashier.shift_code;
+        const shiftStartMs = cashier.shift_start ? new Date(cashier.shift_start).getTime() : 0;
+
+        // 1. Get shift orders stored in localStorage strictly filtered by shift_start
+        const storedShiftOrders = getStoredShiftOrders(cashier.shift_start, shiftId);
 
         // 2. Also try posApi.getOrders
         const allOrders = await posApi.getOrders({ limit: 300 }, true).catch(() => []);
 
-        // Combine / deduplicate orders
-        const combined = [...storedShiftOrders];
-        allOrders.forEach((o) => {
-          if (!combined.some((c) => c.id === o.id || c.order_code === o.order_code)) {
-            const shiftStartDate = new Date(cashier.shift_start);
-            if (new Date(o.created_at) >= shiftStartDate && o.status !== 'cancelled') {
-              combined.push(o);
+        // Combine / deduplicate orders strictly for this shift (Server orders take precedence)
+        const combined = deduplicateOrders([
+          ...(Array.isArray(allOrders) ? allOrders : []),
+          ...storedShiftOrders,
+        ]);
+
+        const validShiftOrders = combined.filter((o) => {
+          if (o.status === 'cancelled') return false;
+
+          // 1. Direct shift ID or shift code match
+          if (o.shift_id && (o.shift_id === shiftId || (shiftCode && o.shift_id === shiftCode))) {
+            return true;
+          }
+
+          // 2. Created during this cashier's shift
+          if (shiftStartMs > 0 && o.created_at) {
+            const orderCreatedMs = new Date(o.created_at).getTime();
+            if (orderCreatedMs >= shiftStartMs && (!o.cashier_id || o.cashier_id === cashierId)) {
+              return true;
             }
           }
+
+          return false;
         });
 
-        setOrders(combined.filter((o) => o.status !== 'cancelled'));
+        setOrders(deduplicateOrders(validShiftOrders));
       } catch (err: any) {
         toast.error(err.message, 'تعذر جلب فواتير الشيفت الحالية');
       } finally {
@@ -98,32 +100,6 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
     let transferTotal = 0;
     let grossTotal = 0;
 
-    // Worker breakdown
-    const workerStatsMap: Record<
-      string,
-      { employee_id: string; name: string; role: string; count: number; totalSales: number }
-    > = {};
-
-    // Initialize all active employees
-    employees.forEach((emp) => {
-      workerStatsMap[emp.id] = {
-        employee_id: emp.id,
-        name: emp.name,
-        role: emp.role,
-        count: 0,
-        totalSales: 0,
-      };
-    });
-
-    // General / unassigned category
-    workerStatsMap['unassigned'] = {
-      employee_id: 'unassigned',
-      name: 'بدون تحديد عامل (عام)',
-      role: 'عام',
-      count: 0,
-      totalSales: 0,
-    };
-
     orders.forEach((order) => {
       const amount = Number(order.total_amount) || 0;
       grossTotal += amount;
@@ -131,25 +107,7 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
       if (order.payment_method === 'cash') cashTotal += amount;
       else if (order.payment_method === 'card') cardTotal += amount;
       else if (order.payment_method === 'transfer' || (order.payment_method as any) === 'wallet') transferTotal += amount;
-
-      const workerId = order.assigned_employee_id || 'unassigned';
-      if (!workerStatsMap[workerId]) {
-        const emp = employees.find((e) => e.id === workerId);
-        workerStatsMap[workerId] = {
-          employee_id: workerId,
-          name: emp ? emp.name : order.assigned_employee_name || 'فني غسيل',
-          role: emp ? emp.role : 'فني',
-          count: 0,
-          totalSales: 0,
-        };
-      }
-
-      workerStatsMap[workerId].count += 1;
-      workerStatsMap[workerId].totalSales += amount;
     });
-
-
-    const activeWorkers = Object.values(workerStatsMap).filter((w) => w.count > 0);
 
     return {
       cashTotal,
@@ -157,9 +115,8 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
       transferTotal,
       grossTotal,
       totalOrders: orders.length,
-      activeWorkers,
     };
-  }, [orders, employees]);
+  }, [orders]);
 
   // Variance calculation
   const numericActualCash = actualCash === '' ? null : Number(actualCash);
@@ -239,10 +196,7 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
     if (!trimmed) return { isValid: false, approverName: '' };
 
     // 1. Check Master Admin PIN from localStorage (default 1234)
-    const adminPin =
-      (typeof window !== 'undefined'
-        ? localStorage.getItem('cw_admin_pin') || localStorage.getItem('admin_master_pin')
-        : null) || '1234';
+    const adminPin = getStoredAdminPin();
 
     if (trimmed === adminPin.trim()) {
       return { isValid: true, approverName: 'لوحة الإدارة العامة (Admin Override)' };
@@ -258,17 +212,19 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
     }
 
     // 3. Check Active Cashier PIN
+    const cashierId = cashier?.cashier_id || cashier?.id;
+    const cashierName = cashier?.cashier_name || cashier?.name;
     const cashierEmp = employees.find(
-      (e) => (cashier?.id && e.id === cashier.id) || (cashier?.name && e.name === cashier.name)
+      (e) => (cashierId && e.id === cashierId) || (cashierName && e.name === cashierName)
     );
     const cashierPin = cashierEmp?.pin_code || '1111';
     if (trimmed === cashierPin.trim()) {
-      return { isValid: true, approverName: cashierEmp?.name || cashier?.name || 'الكاشير المسؤول' };
+      return { isValid: true, approverName: cashierEmp?.name || cashierName || 'الكاشير المسؤول' };
     }
 
     // Also check if entered PIN matches any active cashier employee
     const matchingEmp = employees.find((e) => e.pin_code && e.pin_code.trim() === trimmed);
-    if (matchingEmp && (matchingEmp.id === cashier?.id || matchingEmp.name === cashier?.name)) {
+    if (matchingEmp && (matchingEmp.id === cashierId || matchingEmp.name === cashierName)) {
       return { isValid: true, approverName: matchingEmp.name };
     }
 
@@ -298,9 +254,49 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
       setClosing(true);
       setPinError('');
 
+      const resolvedCashierId = cashier?.cashier_id || cashier?.id;
+      const resolvedCashierName = cashier?.cashier_name || cashier?.name || 'كاشير';
+      const resolvedCashierRole = cashier?.cashier_role || cashier?.role || 'كاشير';
+
+      // Construct archived closed shift record
+      const shiftRecord: ClosedShift = {
+        id: `shift-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        shift_code: `SH-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${Math.floor(100 + Math.random() * 900)}`,
+        cashier_id: resolvedCashierId,
+        cashier_name: resolvedCashierName,
+        cashier_role: resolvedCashierRole,
+        shift_start: cashier?.shift_start || new Date().toISOString(),
+        shift_end: new Date().toISOString(),
+        duration_formatted: elapsedDuration,
+        gross_sales: metrics.grossTotal,
+        cash_sales: metrics.cashTotal,
+        card_sales: metrics.cardTotal,
+        transfer_sales: metrics.transferTotal,
+        total_orders: metrics.totalOrders,
+        expected_cash: metrics.cashTotal,
+        actual_cash: numericActualCash ?? metrics.cashTotal,
+        variance: variance ?? 0,
+        closing_notes: closingNotes.trim() || undefined,
+        approved_by: approverName,
+        is_end_of_day: isEndOfDayClose,
+        orders: [...orders],
+        active_workers_breakdown: [],
+        created_at: new Date().toISOString(),
+      };
+
+      // Save to archive storage and API
+      appendClosedShift(shiftRecord);
+      saveStoredActiveShiftSession(null);
+      posApi.closeActiveShift(shiftRecord).catch(() => {});
+
+      // Dispatch automated Telegram shift closure notification
+      notifyShiftClose(shiftRecord).catch(() => {});
+
+      // Unconditionally clear active shift orders since this shift is now officially closed & archived
+      clearStoredShiftOrders();
+
       if (isEndOfDayClose) {
-        // End of Day Mode: Clock out all active workers, clear shift orders, and reset active headcount to 0
-        clearStoredShiftOrders();
+        // End of Day Mode: Clock out all active workers and reset active headcount to 0
         const { totalClockedOut } = clockOutAllActiveEmployees(employees);
         toast.success(
           `تم تقفيل يوم العمل بالكامل واعتماده بواسطة (${approverName}) وتصفية شفت كافة الموظفين (${totalClockedOut} موظف) بنجاح وجرد الخزينة بمبلغ ${formatEGP(
@@ -310,11 +306,11 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
         );
       } else {
         // Cashier Shift Change Mode: Clock out only the closing cashier
-        if (cashier?.id) {
-          clockOutSingleCashier(cashier.id, employees);
+        if (resolvedCashierId) {
+          clockOutSingleCashier(resolvedCashierId, employees);
         }
         toast.success(
-          `تم تقفيل وردية الكاشير (${cashier?.name}) واعتمادها بواسطة (${approverName}) بنجاح وتسليم الشيفت وجرد الخزينة بمبلغ ${formatEGP(
+          `تم تقفيل وردية الكاشير (${resolvedCashierName}) واعتمادها بواسطة (${approverName}) بنجاح وتسليم الشيفت وجرد الخزينة بمبلغ ${formatEGP(
             numericActualCash ?? metrics.cashTotal
           )}`,
           'تم تسليم الشيفت'
@@ -322,8 +318,14 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
       }
 
       // Remove cashier session from storage
-      localStorage.removeItem('pos_active_cashier');
+      saveLocalCashierSession(null);
       setAuthPin('');
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('cw_shifts_updated'));
+        window.dispatchEvent(new Event('cw_orders_updated'));
+        window.dispatchEvent(new Event('storage'));
+      }
 
       onShiftClosed();
       onClose();
@@ -361,7 +363,7 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
                 color: 'var(--color-primary)',
               }}
             >
-              <User className="w-5 h-5" />
+              <span className="font-black text-sm">{cashier?.name ? cashier.name.charAt(0) : 'ك'}</span>
             </div>
             <div>
               <div className="text-sm font-black text-white flex items-center gap-2">
@@ -371,7 +373,6 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
                 </span>
               </div>
               <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5 font-mono">
-                <Clock className="w-3 h-3 text-slate-500" />
                 <span>بداية الشيفت: {cashier?.shift_start ? formatDateTime(cashier.shift_start) : '-'}</span>
               </div>
             </div>
@@ -398,9 +399,8 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
               borderColor: 'var(--border-color)',
             }}
           >
-            <div className="flex items-center justify-between text-slate-400 mb-1">
-              <span>إجمالي الفواتير</span>
-              <Car className="w-4 h-4 text-slate-500" />
+            <div className="text-slate-400 mb-1 font-bold">
+              إجمالي الفواتير
             </div>
             <div className="text-xl font-black text-white font-mono">{metrics.totalOrders}</div>
             <div className="text-[10px] text-slate-500 mt-0.5">سيارة منجزة بالشيفت</div>
@@ -409,9 +409,8 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
           <div
             className="p-3.5 rounded-2xl border border-emerald-500/30 bg-emerald-950/20 backdrop-blur-md"
           >
-            <div className="flex items-center justify-between text-emerald-400 mb-1">
-              <span>النقدية (الكاش المتوقع)</span>
-              <Banknote className="w-4 h-4 text-emerald-400" />
+            <div className="text-emerald-400 mb-1 font-bold">
+              النقدية (الكاش المتوقع)
             </div>
             <div className="text-xl font-black text-emerald-400 font-mono">
               {formatEGP(metrics.cashTotal)}
@@ -422,9 +421,8 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
           <div
             className="p-3.5 rounded-2xl border border-sky-500/30 bg-sky-950/20 backdrop-blur-md"
           >
-            <div className="flex items-center justify-between text-sky-400 mb-1">
-              <span>فيزا وبطاقات</span>
-              <CreditCard className="w-4 h-4 text-sky-400" />
+            <div className="text-sky-400 mb-1 font-bold">
+              فيزا وبطاقات
             </div>
             <div className="text-xl font-black text-sky-300 font-mono">
               {formatEGP(metrics.cardTotal)}
@@ -435,84 +433,14 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
           <div
             className="p-3.5 rounded-2xl border border-purple-500/30 bg-purple-950/20 backdrop-blur-md"
           >
-            <div className="flex items-center justify-between text-purple-400 mb-1">
-              <span>محافظ إلكترونية</span>
-              <Smartphone className="w-4 h-4 text-purple-400" />
+            <div className="text-purple-400 mb-1 font-bold">
+              محافظ إلكترونية
             </div>
             <div className="text-xl font-black text-purple-300 font-mono">
               {formatEGP(metrics.transferTotal)}
             </div>
             <div className="text-[10px] text-purple-500/80 mt-0.5">فودافون كاش / تحويل</div>
           </div>
-        </div>
-
-        {/* Worker Performance Breakdown (عدد السيارات المنجزة لكل فني أثناء الشيفت) */}
-        <div
-          className="p-4 rounded-2xl border space-y-3"
-          style={{
-            backgroundColor: 'rgba(0, 0, 0, 0.4)',
-            borderColor: 'var(--border-color)',
-          }}
-        >
-          <div className="flex items-center justify-between border-b pb-2.5" style={{ borderColor: 'var(--border-color)' }}>
-            <div className="flex items-center gap-2">
-              <Car className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
-              <h4 className="text-xs font-black text-white">
-                إنتاجية العمال والفنيين خلال الشيفت (Car Wash Worker Productivity)
-              </h4>
-            </div>
-            <span className="text-[10px] text-slate-400 font-mono">
-              {metrics.activeWorkers.length} عمال أنجزوا طلبات
-            </span>
-          </div>
-
-          {metrics.activeWorkers.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-right text-xs">
-                <thead className="text-slate-400 border-b border-slate-800">
-                  <tr>
-                    <th className="py-2 px-3 font-semibold">اسم الفني / العامل</th>
-                    <th className="py-2 px-3 font-semibold">المسمى</th>
-                    <th className="py-2 px-3 font-semibold text-center">عدد السيارات المنجزة</th>
-                    <th className="py-2 px-3 font-semibold">إجمالي قيمة الغسيل</th>
-                    <th className="py-2 px-3 font-semibold text-center">نسبة الإنجاز</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono">
-                  {metrics.activeWorkers.map((worker) => {
-                    const percentage = metrics.totalOrders > 0
-                      ? Math.round((worker.count / metrics.totalOrders) * 100)
-                      : 0;
-                    return (
-                      <tr key={worker.employee_id} className="hover:bg-white/5 transition-colors">
-                        <td className="py-2 px-3 font-sans font-bold text-slate-100">
-                          {worker.name}
-                        </td>
-                        <td className="py-2 px-3 font-sans text-slate-400 text-[11px]">
-                          {worker.role}
-                        </td>
-                        <td className="py-2 px-3 text-center font-bold text-emerald-400">
-                          {worker.count} سيارة
-                        </td>
-                        <td className="py-2 px-3 font-bold" style={{ color: 'var(--color-primary)' }}>
-                          {formatEGP(worker.totalSales)}
-                        </td>
-                        <td className="py-2 px-3 text-center">
-                          <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
-                            {percentage}%
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="text-center py-4 text-xs text-slate-500">
-              لم يتم تعيين عمال على الفواتير المنجزة في هذا الشيفت حتى الآن
-            </div>
-          )}
         </div>
 
         {/* Cash Drawer Count & Reconciliation */}
@@ -523,8 +451,7 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
             borderColor: 'var(--border-color)',
           }}
         >
-          <div className="flex items-center gap-2 pb-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
-            <Coins className="w-4 h-4 text-amber-400" />
+          <div className="pb-2 border-b" style={{ borderColor: 'var(--border-color)' }}>
             <h4 className="text-xs font-black text-white">جرد النقدية ومطابقة الدرج (Cash Reconciliation)</h4>
           </div>
 
@@ -568,10 +495,10 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
                   {variance === null
                     ? 'في انتظار إدخال جرد الدرج'
                     : variance === 0
-                    ? '✅ الدرج مطابق تماماً (0.00)'
+                    ? 'الدرج مطابق تماماً (0.00)'
                     : variance < 0
-                    ? `⚠️ عجز في النقدية (${formatEGP(Math.abs(variance))})`
-                    : `⚠️ زيادة في النقدية (+${formatEGP(variance)})`}
+                    ? `عجز في النقدية (${formatEGP(Math.abs(variance))})`
+                    : `زيادة في النقدية (+${formatEGP(variance)})`}
                 </span>
                 {variance !== null && (
                   <span>{variance > 0 ? `+${formatEGP(variance)}` : formatEGP(variance)}</span>
@@ -642,19 +569,14 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
             }}
           >
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                  <KeyRound className="w-4 h-4" />
-                </div>
-                <div>
-                  <h4 className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
-                    <span>التحقق الأمني واعتماد الإغلاق (رمز PIN)</span>
-                    <span className="text-rose-400">*</span>
-                  </h4>
-                  <p className="text-[10px] text-slate-400">
-                    أدخل رمز PIN للكاشير المسؤول ({cashier?.name || 'الكاشير'}) أو رمز مالك المنشأة (مستر فتحي)
-                  </p>
-                </div>
+              <div>
+                <h4 className="text-xs font-bold text-slate-100 flex items-center gap-1.5">
+                  <span>التحقق الأمني واعتماد الإغلاق (رمز PIN)</span>
+                  <span className="text-rose-400">*</span>
+                </h4>
+                <p className="text-[10px] text-slate-400">
+                  أدخل رمز PIN للكاشير المسؤول ({cashier?.name || 'الكاشير'}) أو رمز مالك المنشأة (مستر فتحي)
+                </p>
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700 font-mono">
                 Dual PIN
@@ -694,16 +616,15 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
                     setAuthPin('');
                     setPinError('');
                   }}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 text-xs font-bold"
                 >
-                  <XCircle className="w-4 h-4" />
+                  ✕
                 </button>
               )}
             </div>
 
             {pinError && (
-              <div className="flex items-center gap-1.5 text-[11px] font-bold text-rose-400 animate-fadeIn">
-                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <div className="text-[11px] font-bold text-rose-400 animate-fadeIn">
                 <span>{pinError}</span>
               </div>
             )}
@@ -723,7 +644,6 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
               borderColor: 'var(--border-color)',
             }}
           >
-            <Printer className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
             <span>طباعة تقرير Z-Report للشيفت</span>
           </button>
 
@@ -736,10 +656,8 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
               backgroundColor: 'var(--color-primary)',
             }}
           >
-            {closing ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <CheckCircle2 className="w-4 h-4" />
+            {closing && (
+              <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
             )}
             <span>اعتماد وقفل الشيفت والخروج</span>
           </button>
@@ -795,28 +713,6 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
               <span>إجمالي المبيعات:</span>
               <span>{formatEGP(metrics.grossTotal)}</span>
             </div>
-
-            <div className="divider"></div>
-
-            <div className="center bold" style={{ fontSize: '11px', margin: '4px 0' }}>إنتاجية الفنيين والعمال</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>الفني</th>
-                  <th>السيارات</th>
-                  <th>الإجمالي</th>
-                </tr>
-              </thead>
-              <tbody>
-                {metrics.activeWorkers.map((w) => (
-                  <tr key={w.employee_id}>
-                    <td>{w.name}</td>
-                    <td>{w.count}</td>
-                    <td>{formatEGP(w.totalSales)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
 
             <div className="divider"></div>
 

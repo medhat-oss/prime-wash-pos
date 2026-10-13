@@ -49,11 +49,11 @@ export class DashboardService {
         ORDER BY (current_stock_grams / NULLIF(reorder_threshold_grams, 0)) ASC
       `),
 
-      // 4. Employee stats
+      // 4. Employee stats (Operational staff strictly excluding Owner)
       query(`
         SELECT 
-          (SELECT COUNT(*)::int FROM employees WHERE status = 'active') AS active_employees_count,
-          (SELECT COUNT(DISTINCT employee_id)::int FROM attendance WHERE work_date = CURRENT_DATE) AS attended_today_count
+          (SELECT COUNT(*)::int FROM employees WHERE status = 'active' AND name != 'مستر فتحي' AND role NOT LIKE '%مالك%') AS active_employees_count,
+          (SELECT COUNT(DISTINCT a.employee_id)::int FROM attendance a JOIN employees e ON a.employee_id = e.id WHERE a.work_date = CURRENT_DATE AND e.name != 'مستر فتحي' AND e.role NOT LIKE '%مالك%') AS attended_today_count
         `),
 
       // 5. Top 5 popular services
@@ -422,6 +422,13 @@ export class DashboardService {
     await query(
       `UPDATE system_settings 
        SET admin_pin = $1, updated_at = CURRENT_TIMESTAMP`,
+      [cleanNew]
+    );
+
+    await query(
+      `UPDATE employees 
+       SET pin_code = $1, updated_at = CURRENT_TIMESTAMP 
+       WHERE system_role = 'owner' OR role ILIKE '%مالك%' OR name = 'مستر فتحي'`,
       [cleanNew]
     );
 

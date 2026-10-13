@@ -1,18 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import {
-  Users,
-  Plus,
-  Clock,
-  DollarSign,
-  Calculator,
-  CheckCircle2,
-  Edit2,
-  Trash2,
-  Loader2,
-  AlertTriangle,
-  ArrowUpRight,
-  Calendar,
-} from 'lucide-react';
 import { hrApi } from '../../api/client.js';
 import {
   Employee,
@@ -24,8 +10,15 @@ import {
 import { FALLBACK_EMPLOYEES } from '../../api/mockFallbacks.js';
 import { useToast } from '../../components/Toast.js';
 import Modal from '../../components/Modal.js';
+import ConfirmModal from '../../components/ConfirmModal.js';
 import { formatEGP, formatTime, formatLocalDateStr } from '../../utils/formatters.js';
-import { EmptyState } from '../../components/ui/EmptyState.js';
+import { EmptyState, TableSkeletonRows, ErrorState } from '../../components/ui/index.js';
+import {
+  getTodayDateStr,
+  getFormattedTodayStatusMap,
+  isOwnerEmployee,
+} from '../../utils/attendanceStorage.js';
+import { debounce } from '../../utils/eventBus.js';
 
 
 const WEEKDAYS = [
@@ -57,6 +50,7 @@ export const HrPayrollTab: React.FC = () => {
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
   const [isTransactionModalOpen, setIsTransactionModalOpen] = useState(false);
   const [isPayrollModalOpen, setIsPayrollModalOpen] = useState(false);
+  const [isPayrollConfirmOpen, setIsPayrollConfirmOpen] = useState(false);
 
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [payrollCalc, setPayrollCalc] = useState<PayrollCalculation | null>(null);
@@ -67,6 +61,7 @@ export const HrPayrollTab: React.FC = () => {
     name: '',
     phone: '',
     role: 'فني غسيل',
+    system_role: 'worker' as 'worker' | 'cashier' | 'manager' | 'owner',
     hourly_rate: 30.0,
     overtime_hourly_rate: '' as string | number,
     target_daily_hours: 8.0,
@@ -79,12 +74,15 @@ export const HrPayrollTab: React.FC = () => {
   });
 
   // Attendance Form
-  const [attendanceForm, setAttendanceForm] = useState({
-    employee_id: '',
-    work_date: new Date().toISOString().slice(0, 10),
-    check_in: `${new Date().toISOString().slice(0, 10)}T08:00`,
-    check_out: `${new Date().toISOString().slice(0, 10)}T17:00`,
-    notes: '',
+  const [attendanceForm, setAttendanceForm] = useState(() => {
+    const today = getTodayDateStr();
+    return {
+      employee_id: '',
+      work_date: today,
+      check_in: `${today}T08:00`,
+      check_out: `${today}T17:00`,
+      notes: '',
+    };
   });
 
   // Transaction Form
@@ -116,6 +114,7 @@ export const HrPayrollTab: React.FC = () => {
         hrApi.getAttendance().catch(() => []),
         hrApi.getTransactions().catch(() => []),
         hrApi.getPayouts().catch(() => []),
+        hrApi.getTodayAttendanceStatus(true).catch(() => null),
       ]);
       const validEmp = Array.isArray(empData) && empData.length > 0 ? empData : FALLBACK_EMPLOYEES;
       const sortedEmp = [...validEmp].sort((a: Employee, b: Employee) => {
@@ -143,20 +142,21 @@ export const HrPayrollTab: React.FC = () => {
   useEffect(() => {
     fetchData();
 
-    const handleHrUpdates = () => {
+    const debouncedHrUpdates = debounce(() => {
       fetchData();
-    };
+    }, 500);
 
-    window.addEventListener('cw_attendance_updated', handleHrUpdates);
-    window.addEventListener('cw_transactions_updated', handleHrUpdates);
-    window.addEventListener('cw_payroll_updated', handleHrUpdates);
-    window.addEventListener('storage', handleHrUpdates);
+    window.addEventListener('cw_attendance_updated', debouncedHrUpdates);
+    window.addEventListener('cw_transactions_updated', debouncedHrUpdates);
+    window.addEventListener('cw_payroll_updated', debouncedHrUpdates);
+    window.addEventListener('storage', debouncedHrUpdates);
 
     return () => {
-      window.removeEventListener('cw_attendance_updated', handleHrUpdates);
-      window.removeEventListener('cw_transactions_updated', handleHrUpdates);
-      window.removeEventListener('cw_payroll_updated', handleHrUpdates);
-      window.removeEventListener('storage', handleHrUpdates);
+      debouncedHrUpdates.cancel();
+      window.removeEventListener('cw_attendance_updated', debouncedHrUpdates);
+      window.removeEventListener('cw_transactions_updated', debouncedHrUpdates);
+      window.removeEventListener('cw_payroll_updated', debouncedHrUpdates);
+      window.removeEventListener('storage', debouncedHrUpdates);
     };
   }, []);
 
@@ -207,6 +207,7 @@ export const HrPayrollTab: React.FC = () => {
         name: employeeForm.name.trim(),
         phone: employeeForm.phone.trim() || undefined,
         role: employeeForm.role.trim() || 'فني غسيل',
+        system_role: employeeForm.system_role || 'worker',
         hourly_rate: Number(employeeForm.hourly_rate),
         overtime_hourly_rate:
           employeeForm.overtime_hourly_rate !== '' &&
@@ -322,16 +323,15 @@ export const HrPayrollTab: React.FC = () => {
     }
   };
 
-  const handleSettlePayroll = async () => {
+  const handleSettlePayroll = () => {
+    if (!selectedEmployee || !payrollCalc) return;
+    setIsPayrollConfirmOpen(true);
+  };
+
+  const handleExecuteSettlePayroll = async () => {
     if (!selectedEmployee || !payrollCalc) return;
     const isDebt = payrollCalc.financial_breakdown.net_payable_salary < 0;
     const debtAmount = Math.abs(payrollCalc.financial_breakdown.net_payable_salary);
-
-    const confirmMsg = isDebt
-      ? `الموظف (${selectedEmployee.name}) مدين للمغسلة بقيمة ${formatEGP(debtAmount)} ج.م (إجمالي السلف والخصومات أكبر من المستحقات).\n\nهل تريد اعتماد التصفية؟ سيتم تسجيل صرف 0 ج.م في الخزينة وترحيل المديونية تلقائياً كسلفة للشهر القادم.`
-      : `تأكيد صرف راتب (${selectedEmployee.name}) بصافي: ${formatEGP(payrollCalc.financial_breakdown.net_payable_salary)} ج.م؟`;
-
-    if (!window.confirm(confirmMsg)) return;
 
     try {
       setSubmitting(true);
@@ -357,12 +357,13 @@ export const HrPayrollTab: React.FC = () => {
         );
       }
 
+      setIsPayrollConfirmOpen(false);
       setIsPayrollModalOpen(false);
       setSelectedEmployee(null);
       setPayrollCalc(null);
       fetchData();
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(err.message || 'تعذر تسوية وصرف الراتب');
     } finally {
       setSubmitting(false);
     }
@@ -373,9 +374,8 @@ export const HrPayrollTab: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <Users className="w-5 h-5" style={{ color: 'var(--color-primary)' }} />
-            <span>شؤون الموظفين والرواتب اللحظية (HR & Real-time Payroll)</span>
+          <h2 className="text-xl font-black text-white">
+            شؤون الموظفين والرواتب اللحظية (HR & Real-time Payroll)
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
             متابعة الحضور والإنصراف وساعات العمل، الإجازات الأسبوعية، السلف والمكافآت، وتصفية المسيرات بالجنيه المصري
@@ -391,6 +391,7 @@ export const HrPayrollTab: React.FC = () => {
                 name: '',
                 phone: '',
                 role: 'فني غسيل',
+                system_role: 'worker',
                 hourly_rate: 30.0,
                 overtime_hourly_rate: '',
                 target_daily_hours: 8.0,
@@ -403,53 +404,53 @@ export const HrPayrollTab: React.FC = () => {
               });
               setIsEmployeeModalOpen(true);
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2.5 text-white rounded-xl text-xs font-bold transition-all shadow-lg hover:brightness-110"
+            className="flex items-center justify-center px-4 py-2.5 text-white rounded-xl text-xs font-bold transition-all shadow-lg hover:brightness-110"
             style={{
               backgroundColor: 'var(--color-primary)',
             }}
           >
-            <Plus className="w-4 h-4" />
             <span>موظف جديد</span>
           </button>
 
           <button
             onClick={() => {
+              const today = getTodayDateStr();
+              const firstStaff = (employees || []).find((e) => !isOwnerEmployee(e));
               setAttendanceForm({
-                employee_id: employees[0]?.id || '',
-                work_date: new Date().toISOString().slice(0, 10),
-                check_in: `${new Date().toISOString().slice(0, 10)}T08:00`,
-                check_out: `${new Date().toISOString().slice(0, 10)}T17:00`,
+                employee_id: firstStaff?.id || (employees || [])[0]?.id || '',
+                work_date: today,
+                check_in: `${today}T08:00`,
+                check_out: `${today}T17:00`,
                 notes: '',
               });
               setIsAttendanceModalOpen(true);
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 border text-slate-200 rounded-xl text-xs font-bold transition-colors hover:bg-white/5"
+            className="flex items-center justify-center px-4 py-2.5 border text-slate-200 rounded-xl text-xs font-bold transition-colors hover:bg-white/5"
             style={{
               backgroundColor: 'rgba(255, 255, 255, 0.05)',
               borderColor: 'var(--border-color)',
             }}
           >
-            <Clock className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
             <span>تسجيل حضور / إنصراف يدوي</span>
           </button>
 
           <button
             onClick={() => {
+              const firstStaff = (employees || []).find((e) => !isOwnerEmployee(e));
               setTransactionForm({
-                employee_id: employees[0]?.id || '',
+                employee_id: firstStaff?.id || (employees || [])[0]?.id || '',
                 type: 'advance',
                 amount: 300.0,
                 notes: '',
               });
               setIsTransactionModalOpen(true);
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 border text-slate-200 rounded-xl text-xs font-bold transition-colors hover:bg-white/5"
+            className="flex items-center justify-center px-4 py-2.5 border text-slate-200 rounded-xl text-xs font-bold transition-colors hover:bg-white/5"
             style={{
               backgroundColor: 'rgba(255, 255, 255, 0.05)',
               borderColor: 'var(--border-color)',
             }}
           >
-            <DollarSign className="w-4 h-4 text-emerald-400" />
             <span>سلفة / مكافأة / خصم</span>
           </button>
         </div>
@@ -488,197 +489,282 @@ export const HrPayrollTab: React.FC = () => {
       </div>
 
       {/* Content for HR Sub-tabs */}
-      {hrSubTab === 'employees' && (
-        <div
-          className="border rounded-3xl overflow-hidden shadow-xl backdrop-blur-md"
-          style={{
-            backgroundColor: 'var(--card-bg)',
-            borderColor: 'var(--border-color)',
-          }}
-        >
-          <div className="overflow-x-auto">
-            <table className="w-full text-right text-xs">
-              <thead
-                className="text-slate-400 border-b"
-                style={{
-                  backgroundColor: 'rgba(0, 0, 0, 0.35)',
-                  borderColor: 'var(--border-color)',
-                }}
-              >
-                <tr>
-                  <th className="py-3 px-4 font-semibold">اسم الموظف</th>
-                  <th className="py-3 px-4 font-semibold">المسمى الوظيفي</th>
-                  <th className="py-3 px-4 font-semibold">سعر الساعة</th>
-                  <th className="py-3 px-4 font-semibold">مواعيد العمل والإجازة</th>
-                  <th className="py-3 px-4 font-semibold">الحالة</th>
-                  <th className="py-3 px-4 font-semibold text-center">كشف الراتب اللحظي</th>
-                  <th className="py-3 px-4 font-semibold text-center">إجراءات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y" style={{ borderColor: 'var(--border-color)' }}>
-                {(employees || []).length > 0 ? (
-                  (employees || []).map((emp) => (
-                    <tr key={emp.id} className="hover:bg-white/5 transition-colors">
-                      <td className="py-3.5 px-4 font-bold text-slate-100">
-                        <div>{emp.name}</div>
-                        {emp.phone && <div className="text-[10px] text-slate-400 font-mono">{emp.phone}</div>}
-                      </td>
+      {hrSubTab === 'employees' && (() => {
+        const todayStatusMap = getFormattedTodayStatusMap(employees);
+        return (
+          <div
+            className="border rounded-3xl overflow-hidden shadow-xl backdrop-blur-md"
+            style={{
+              backgroundColor: 'var(--card-bg)',
+              borderColor: 'var(--border-color)',
+            }}
+          >
+            <div className="overflow-x-auto">
+              <table className="w-full text-right text-xs">
+                <thead
+                  className="text-slate-400 border-b"
+                  style={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+                    borderColor: 'var(--border-color)',
+                  }}
+                >
+                  <tr>
+                    <th className="py-3 px-4 font-semibold">اسم الموظف</th>
+                    <th className="py-3 px-4 font-semibold">المسمى الوظيفي</th>
+                    <th className="py-3 px-4 font-semibold">سعر الساعة</th>
+                    <th className="py-3 px-4 font-semibold">مواعيد العمل والإجازة</th>
+                    <th className="py-3 px-4 font-semibold">حالة حضور اليوم</th>
+                    <th className="py-3 px-4 font-semibold">حالة التعيين</th>
+                    <th className="py-3 px-4 font-semibold text-center">كشف الراتب اللحظي</th>
+                    <th className="py-3 px-4 font-semibold text-center">إجراءات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y" style={{ borderColor: 'var(--border-color)' }}>
+                  {loading ? (
+                    <TableSkeletonRows columns={7} rows={4} />
+                  ) : (employees || []).length > 0 ? (
+                    (employees || []).map((emp) => {
+                      const isOwner = isOwnerEmployee(emp);
+                      const att = todayStatusMap[emp.id];
 
-                      <td className="py-3.5 px-4 text-slate-300">
-                        <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
-                          {emp.role}
-                        </span>
-                      </td>
-
-                      <td className="py-3.5 px-4 font-mono">
-                        {emp.name === 'مستر فتحي' || emp.role?.includes('مالك') ? (
-                          <div className="text-slate-400 font-sans text-xs">مالك المنشأة (—)</div>
-                        ) : (
-                          <>
-                            <div className="font-bold" style={{ color: 'var(--color-primary)' }}>
-                              {formatEGP(emp.hourly_rate)}/ساعة
-                            </div>
-                            <div className="text-[10px] text-slate-400 mt-0.5">
-                              إضافي:{' '}
-                              {emp.overtime_hourly_rate
-                                ? `${formatEGP(emp.overtime_hourly_rate)}/ساعة`
-                                : `${formatEGP(emp.hourly_rate)} (1.0x)`}
-                            </div>
-                          </>
-                        )}
-                      </td>
-
-                      <td className="py-3.5 px-4">
-                        {emp.name === 'مستر فتحي' || emp.role?.includes('مالك') ? (
-                          <div className="text-slate-400 text-xs">بدون شفت محدد</div>
-                        ) : (
-                          <div className="space-y-1">
-                            <div className="text-[11px] text-slate-200 font-bold">
-                              {emp.target_weekly_hours || 48} ساعة / {emp.target_weekly_days || 6} أيام
-                            </div>
-                            <div className="text-[10px] text-slate-400">
-                              الإجازة: <span className="text-amber-300 font-bold">{emp.weekly_off_day || 'الجمعة'}</span>
-                              {emp.is_paid_weekly_off ? (
-                                <span className="text-emerald-400 mr-1 font-bold">(مدفوعة)</span>
-                              ) : (
-                                <span className="text-slate-500 mr-1">(غير مدفوعة)</span>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </td>
-
-                      <td className="py-3.5 px-4">
-                        <span
-                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                            emp.status === 'active'
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                              : 'bg-slate-800 text-slate-400 border border-slate-700'
+                      return (
+                        <tr
+                          key={emp.id}
+                          className={`transition-colors ${
+                            isOwner ? 'bg-amber-950/10 hover:bg-amber-950/20' : 'hover:bg-white/5'
                           }`}
                         >
-                          <span className={`w-1.5 h-1.5 rounded-full ${emp.status === 'active' ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-                          <span>{emp.status === 'active' ? 'على رأس العمل' : 'غير نشط'}</span>
-                        </span>
-                      </td>
+                          <td className="py-3.5 px-4 font-bold text-slate-100">
+                            <div className="flex items-center gap-1.5">
+                              {isOwner && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                  إدارة
+                                </span>
+                              )}
+                              <span>{emp.name}</span>
+                            </div>
+                            {emp.phone && <div className="text-[10px] text-slate-400 font-mono mt-0.5">{emp.phone}</div>}
+                          </td>
 
-                      <td className="py-3.5 px-4 text-center">
-                        <button
-                          onClick={() => handleOpenPayrollCalc(emp)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border hover:brightness-110"
-                          style={{
-                            backgroundColor: 'rgba(255, 255, 255, 0.08)',
-                            borderColor: 'var(--border-color)',
-                            color: 'var(--color-primary)',
+                          <td className="py-3.5 px-4 text-slate-300">
+                            <div className="space-y-1">
+                              <span
+                                className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  emp.system_role === 'owner' || isOwner
+                                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                                    : emp.system_role === 'manager'
+                                    ? 'bg-purple-500/20 text-purple-300 border-purple-500/30'
+                                    : emp.system_role === 'cashier'
+                                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/30'
+                                    : 'bg-slate-800 text-slate-300 border-slate-700'
+                                }`}
+                              >
+                                {emp.role}
+                              </span>
+                              <div>
+                                <span className="text-[9px] text-slate-400 font-medium">
+                                  {emp.system_role === 'owner'
+                                    ? 'صاحب المنشأة'
+                                    : emp.system_role === 'manager'
+                                    ? 'مدير تشغيل'
+                                    : emp.system_role === 'cashier'
+                                    ? 'كاشير POS'
+                                    : 'فني تشغيل'}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3.5 px-4 font-mono">
+                            {isOwner ? (
+                              <div className="text-amber-300/90 font-sans text-xs font-semibold">
+                                أرباح صافية (بدون أجر ساعة)
+                              </div>
+                            ) : (
+                              <>
+                                <div className="font-bold" style={{ color: 'var(--color-primary)' }}>
+                                  {formatEGP(emp.hourly_rate)}/ساعة
+                                </div>
+                                <div className="text-[10px] text-slate-400 mt-0.5">
+                                  إضافي:{' '}
+                                  {emp.overtime_hourly_rate
+                                    ? `${formatEGP(emp.overtime_hourly_rate)}/ساعة`
+                                    : `${formatEGP(emp.hourly_rate)} (1.0x)`}
+                                </div>
+                              </>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 px-4">
+                            {isOwner ? (
+                              <div className="text-slate-400 text-xs font-medium">إشراف وإدارة عامة</div>
+                            ) : (
+                              <div className="space-y-1">
+                                <div className="text-[11px] text-slate-200 font-bold">
+                                  {emp.target_weekly_hours || 48} ساعة / {emp.target_weekly_days || 6} أيام
+                                </div>
+                                <div className="text-[10px] text-slate-400">
+                                  الإجازة: <span className="text-amber-300 font-bold">{emp.weekly_off_day || 'الجمعة'}</span>
+                                  {emp.is_paid_weekly_off ? (
+                                    <span className="text-emerald-400 mr-1 font-bold">(مدفوعة)</span>
+                                  ) : (
+                                    <span className="text-slate-500 mr-1">(غير مدفوعة)</span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </td>
+
+                          {/* Column 5: Today's Real-time Attendance Status */}
+                          <td className="py-3.5 px-4">
+                            {isOwner ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                <span>إدارة المنشأة</span>
+                              </span>
+                            ) : att?.status === 'active_shift' ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.2)]">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                <span>حاضر الآن (شفت نشط)</span>
+                              </span>
+                            ) : att?.status === 'completed_shift' ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-700/50 text-slate-300 border border-slate-600">
+                                <span>انصرف اليوم ⚪</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-slate-800/80 text-slate-400 border border-slate-700">
+                                <span>غير حاضر اليوم ❌</span>
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Column 6: Employment Status */}
+                          <td className="py-3.5 px-4">
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                                emp.status === 'active'
+                                  ? 'bg-emerald-950/60 text-emerald-300 border-emerald-500/30'
+                                  : emp.status === 'on_leave'
+                                  ? 'bg-amber-950/60 text-amber-300 border-amber-500/30'
+                                  : 'bg-slate-800 text-slate-400 border-slate-700'
+                              }`}
+                            >
+                              <span>
+                                {emp.status === 'active'
+                                  ? 'على رأس العمل'
+                                  : emp.status === 'on_leave'
+                                  ? 'في إجازة'
+                                  : 'غير نشط'}
+                              </span>
+                            </span>
+                          </td>
+
+                          {/* Column 7: Instant Payroll Calc */}
+                          <td className="py-3.5 px-4 text-center">
+                            {isOwner ? (
+                              <span className="inline-block px-3 py-1.5 text-[11px] font-semibold text-slate-400 bg-slate-900/60 border border-slate-800 rounded-xl">
+                                أرباح المالك (خارج مسير الأجور)
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleOpenPayrollCalc(emp)}
+                                className="inline-flex items-center justify-center px-3 py-1.5 rounded-xl text-xs font-bold transition-all border hover:brightness-110"
+                                style={{
+                                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                                  borderColor: 'var(--border-color)',
+                                  color: 'var(--color-primary)',
+                                }}
+                              >
+                                <span>حساب وتصفية الراتب</span>
+                              </button>
+                            )}
+                          </td>
+
+                          {/* Column 8: Actions */}
+                          <td className="py-3.5 px-4 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                onClick={() => {
+                                  const days = emp.target_weekly_days || 6;
+                                  const weeklyHours = emp.target_weekly_hours || 48.0;
+                                  const dailyHours = Number((weeklyHours / days).toFixed(1)) || 8.0;
+
+                                  setSelectedEmployee(emp);
+                                  setEmployeeForm({
+                                    name: emp.name,
+                                    phone: emp.phone || '',
+                                    role: emp.role,
+                                    system_role: emp.system_role || (isOwnerEmployee(emp) ? 'owner' : emp.role?.includes('كاشير') ? 'cashier' : 'worker'),
+                                    hourly_rate: emp.hourly_rate,
+                                    overtime_hourly_rate: emp.overtime_hourly_rate ?? '',
+                                    target_daily_hours: dailyHours,
+                                    target_weekly_days: days,
+                                    target_weekly_hours: weeklyHours,
+                                    weekly_off_day: emp.weekly_off_day || 'الجمعة',
+                                    is_paid_weekly_off: Boolean(emp.is_paid_weekly_off),
+                                    pin_code: '1234',
+                                    status: emp.status,
+                                  });
+                                  setIsEmployeeModalOpen(true);
+                                }}
+                                title="تعديل بيانات الموظف ونظام العمل"
+                                className="px-2.5 py-1 border text-slate-300 rounded-lg text-xs font-bold transition-colors hover:bg-white/10"
+                                style={{
+                                  backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                                  borderColor: 'var(--border-color)',
+                                }}
+                              >
+                                تعديل
+                              </button>
+
+                              <button
+                                onClick={() => setEmployeeToDelete(emp)}
+                                title="حذف الموظف نهائياً"
+                                className="px-2.5 py-1 border border-rose-500/30 text-rose-400 bg-rose-950/20 hover:bg-rose-900/50 rounded-lg text-xs font-bold transition-colors"
+                              >
+                                حذف
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  ) : (
+                    <tr>
+                      <td colSpan={8} className="py-8">
+                        <EmptyState
+                          compact
+                          title="لا يوجد موظفون مسجلون"
+                          description="أضف طاقم العمل وفنيي الغسيل وتحديد معدل الأجر بالساعة وجدول العمل"
+                          actionLabel="إضافة موظف جديد"
+                          onAction={() => {
+                            setSelectedEmployee(null);
+                            setEmployeeForm({
+                              name: '',
+                              phone: '',
+                              role: 'فني غسيل',
+                              system_role: 'worker',
+                              hourly_rate: 30.0,
+                              overtime_hourly_rate: '',
+                              target_daily_hours: 8.0,
+                              target_weekly_days: 6,
+                              target_weekly_hours: 48.0,
+                              weekly_off_day: 'الجمعة',
+                              is_paid_weekly_off: false,
+                              pin_code: '1234',
+                              status: 'active',
+                            });
+                            setIsEmployeeModalOpen(true);
                           }}
-                        >
-                          <Calculator className="w-3.5 h-3.5" />
-                          <span>حساب وتصفية الراتب</span>
-                        </button>
-                      </td>
-
-                      <td className="py-3.5 px-4 text-center">
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            onClick={() => {
-                              const days = emp.target_weekly_days || 6;
-                              const weeklyHours = emp.target_weekly_hours || 48.0;
-                              const dailyHours = Number((weeklyHours / days).toFixed(1)) || 8.0;
-
-                              setSelectedEmployee(emp);
-                              setEmployeeForm({
-                                name: emp.name,
-                                phone: emp.phone || '',
-                                role: emp.role,
-                                hourly_rate: emp.hourly_rate,
-                                overtime_hourly_rate: emp.overtime_hourly_rate ?? '',
-                                target_daily_hours: dailyHours,
-                                target_weekly_days: days,
-                                target_weekly_hours: weeklyHours,
-                                weekly_off_day: emp.weekly_off_day || 'الجمعة',
-                                is_paid_weekly_off: Boolean(emp.is_paid_weekly_off),
-                                pin_code: '1234',
-                                status: emp.status,
-                              });
-                              setIsEmployeeModalOpen(true);
-                            }}
-                            title="تعديل بيانات الموظف ونظام العمل"
-                            className="p-2 border text-slate-300 rounded-lg transition-colors hover:bg-white/10"
-                            style={{
-                              backgroundColor: 'rgba(255, 255, 255, 0.05)',
-                              borderColor: 'var(--border-color)',
-                            }}
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-
-                          <button
-                            onClick={() => setEmployeeToDelete(emp)}
-                            title="حذف الموظف نهائياً"
-                            className="p-2 border border-rose-500/30 text-rose-400 bg-rose-950/20 hover:bg-rose-900/50 rounded-lg transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        />
                       </td>
                     </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={7} className="py-8">
-                      <EmptyState
-                        compact
-                        icon={<Users className="w-6 h-6 opacity-70" />}
-                        title="لا يوجد موظفون مسجلون"
-                        description="أضف طاقم العمل وفنيي الغسيل وتحديد معدل الأجر بالساعة وجدول العمل"
-                        actionLabel="إضافة موظف جديد"
-                        onAction={() => {
-                          setSelectedEmployee(null);
-                          setEmployeeForm({
-                            name: '',
-                            phone: '',
-                            role: 'فني غسيل',
-                            hourly_rate: 30.0,
-                            overtime_hourly_rate: '',
-                            target_daily_hours: 8.0,
-                            target_weekly_days: 6,
-                            target_weekly_hours: 48.0,
-                            weekly_off_day: 'الجمعة',
-                            is_paid_weekly_off: false,
-                            pin_code: '1234',
-                            status: 'active',
-                          });
-                          setIsEmployeeModalOpen(true);
-                        }}
-                      />
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      )}
-
+        );
+      })()}
 
       {/* Sub-tab 2: Attendance */}
       {hrSubTab === 'attendance' && (
@@ -778,7 +864,9 @@ export const HrPayrollTab: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y" style={{ borderColor: 'var(--border-color)' }}>
-                  {(() => {
+                  {loading ? (
+                    <TableSkeletonRows columns={8} rows={5} />
+                  ) : (() => {
                     const filtered = (attendanceList || []).filter((att) => {
                       if (attendanceFilterEmp !== 'all' && att.employee_id !== attendanceFilterEmp) return false;
                       if (attendanceFilterDate && att.work_date !== attendanceFilterDate) return false;
@@ -794,16 +882,22 @@ export const HrPayrollTab: React.FC = () => {
                             {formatTime(att.check_in)}
                           </td>
                           <td className="py-3 px-4 font-mono text-slate-300">
-                            {att.check_out ? formatTime(att.check_out) : 'شفت مفتوح'}
+                            {att.check_out ? (
+                              formatTime(att.check_out)
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                شفت نشط 🟢
+                              </span>
+                            )}
                           </td>
                           <td className="py-3 px-4 font-mono font-bold text-slate-200">
                             {att.actual_hours} ساعة
                           </td>
-                          <td className="py-3 px-4 font-mono" style={{ color: 'var(--color-primary)' }}>
-                            {att.overtime_hours > 0 ? `+${att.overtime_hours}h` : '-'}
+                          <td className="py-3 px-4 font-mono font-semibold" style={{ color: Number(att.overtime_hours) > 0 ? 'var(--color-primary)' : undefined }}>
+                            {Number(att.overtime_hours) > 0 ? `+${att.overtime_hours} ساعة` : <span className="text-slate-500 font-normal">0.00</span>}
                           </td>
-                          <td className="py-3 px-4 font-mono text-rose-400">
-                            {att.deducted_hours > 0 ? `-${att.deducted_hours}h` : '-'}
+                          <td className="py-3 px-4 font-mono font-semibold text-rose-400">
+                            {Number(att.deducted_hours) > 0 ? `-${att.deducted_hours} ساعة` : <span className="text-slate-500 font-normal">0.00</span>}
                           </td>
                           <td className="py-3 px-4 text-slate-400 text-[11px]">{att.notes || '-'}</td>
                           <td className="py-3 px-4 text-center">
@@ -811,9 +905,9 @@ export const HrPayrollTab: React.FC = () => {
                               type="button"
                               onClick={() => setAttendanceToDelete(att)}
                               title="حذف سجل الحضور"
-                              className="p-1.5 border border-rose-500/30 text-rose-400 hover:bg-rose-900/40 rounded-lg transition-colors"
+                              className="px-2.5 py-1 border border-rose-500/30 text-rose-400 hover:bg-rose-900/40 rounded-lg text-xs font-bold transition-colors"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              حذف
                             </button>
                           </td>
                         </tr>
@@ -823,7 +917,6 @@ export const HrPayrollTab: React.FC = () => {
                         <td colSpan={9} className="py-8">
                           <EmptyState
                             compact
-                            icon={<Clock className="w-6 h-6 opacity-70" />}
                             title="لا توجد سجلات حضور وانصراف مطابقة"
                             description="تسجيل الدوام يتم تلقائياً عند قيام الفني بمسح رمز الـ PIN من شاشة الكاشير"
                           />
@@ -955,7 +1048,9 @@ export const HrPayrollTab: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y" style={{ borderColor: 'var(--border-color)' }}>
-                  {(() => {
+                  {loading ? (
+                    <TableSkeletonRows columns={7} rows={4} />
+                  ) : (() => {
                     const filtered = (transactions || []).filter((tr) => {
                       if (transactionFilterEmp !== 'all' && tr.employee_id !== transactionFilterEmp) return false;
                       if (transactionFilterType !== 'all' && tr.type !== transactionFilterType) return false;
@@ -1005,9 +1100,9 @@ export const HrPayrollTab: React.FC = () => {
                               type="button"
                               onClick={() => setTransactionToDelete(tr)}
                               title="حذف الحركة المالية"
-                              className="p-1.5 border border-rose-500/30 text-rose-400 hover:bg-rose-900/40 rounded-lg transition-colors"
+                              className="px-2.5 py-1 border border-rose-500/30 text-rose-400 hover:bg-rose-900/40 rounded-lg text-xs font-bold transition-colors"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              حذف
                             </button>
                           </td>
                         </tr>
@@ -1017,7 +1112,6 @@ export const HrPayrollTab: React.FC = () => {
                         <td colSpan={7} className="py-8">
                           <EmptyState
                             compact
-                            icon={<DollarSign className="w-6 h-6 opacity-70" />}
                             title="لا توجد حركات مالية مطابقة"
                             description="سجل السلف والمكافآت والخصومات للموظفين لتسويتها آلياً عند إعداد المسير"
                             actionLabel="تسجيل حركة مالية جديدة"
@@ -1072,7 +1166,9 @@ export const HrPayrollTab: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y" style={{ borderColor: 'var(--border-color)' }}>
-                {(payouts || []).length > 0 ? (
+                {loading ? (
+                  <TableSkeletonRows columns={7} rows={3} />
+                ) : (payouts || []).length > 0 ? (
                   (payouts || []).map((pay) => (
                     <tr key={pay.id} className="hover:bg-white/5 transition-colors">
                       <td className="py-3 px-4 font-mono font-bold" style={{ color: 'var(--color-primary)' }}>{pay.payout_code}</td>
@@ -1098,7 +1194,6 @@ export const HrPayrollTab: React.FC = () => {
                     <td colSpan={8} className="py-8">
                       <EmptyState
                         compact
-                        icon={<Calculator className="w-6 h-6 opacity-70" />}
                         title="لا توجد مسيرات رواتب سابقة"
                         description="تظهر هنا سجلات صرف الرواتب المعتمدة وسندات الصرف المسواة"
                       />
@@ -1139,7 +1234,7 @@ export const HrPayrollTab: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-semibold text-slate-400 mb-1.5">رقم الموبايل</label>
               <input
@@ -1168,6 +1263,65 @@ export const HrPayrollTab: React.FC = () => {
                   borderColor: 'var(--border-color)',
                 }}
               />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                نوع وصلاحية الحساب بالنظام *
+              </label>
+              <select
+                value={employeeForm.system_role}
+                onChange={(e) => {
+                  const newSystemRole = e.target.value as 'worker' | 'cashier' | 'manager' | 'owner';
+                  let updatedRole = employeeForm.role;
+                  if (newSystemRole === 'cashier' && (!updatedRole || updatedRole === 'فني غسيل')) {
+                    updatedRole = 'كاشير واستقبال';
+                  } else if (newSystemRole === 'manager' && (!updatedRole || updatedRole === 'فني غسيل')) {
+                    updatedRole = 'مشرف تشغيل وإدارة';
+                  } else if (newSystemRole === 'owner' && (!updatedRole || updatedRole === 'فني غسيل')) {
+                    updatedRole = 'مالك المنشأة / المدير العام';
+                  } else if (newSystemRole === 'worker' && updatedRole === 'كاشير واستقبال') {
+                    updatedRole = 'فني غسيل';
+                  }
+                  setEmployeeForm({
+                    ...employeeForm,
+                    system_role: newSystemRole,
+                    role: updatedRole,
+                  });
+                }}
+                className="w-full border rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none font-bold"
+                style={{
+                  backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                  borderColor: 'var(--border-color)',
+                  color:
+                    employeeForm.system_role === 'owner'
+                      ? '#f59e0b'
+                      : employeeForm.system_role === 'manager'
+                      ? '#c084fc'
+                      : employeeForm.system_role === 'cashier'
+                      ? '#38bdf8'
+                      : '#cbd5e1',
+                }}
+              >
+                <option value="worker">صنايعي / فني تشغيل (حضور فقط)</option>
+                <option value="cashier">كاشير واستقبال (نقاط البيع POS فقط)</option>
+                <option value="manager">مدير تشغيل (كاشير + لوحة الإدارة)</option>
+                <option value="owner">صاحب المنشأة / مالك (إدارة كاملة)</option>
+              </select>
+              <div className="mt-1.5 text-[10px] font-medium leading-relaxed">
+                {employeeForm.system_role === 'owner' && (
+                  <span className="text-amber-400">👑 صاحب المنشأة: صلاحيات إدارية ومالية كاملة وانتقال فوري للوحة الإدارة.</span>
+                )}
+                {employeeForm.system_role === 'manager' && (
+                  <span className="text-purple-400">🛡️ مدير تشغيل: فتح نقاط البيع (كاشير) + الوصول للوحة الإدارة برمز PIN.</span>
+                )}
+                {employeeForm.system_role === 'cashier' && (
+                  <span className="text-sky-400">💳 كاشير واستقبال: فتح الشيفتات، إصدار الفواتير، وتقفيل درج الخزينة (POS فقط).</span>
+                )}
+                {employeeForm.system_role === 'worker' && (
+                  <span className="text-slate-400">🔧 فني تشغيل: تسجيل الحضور والإنصراف فقط، ومحجوب عن فتح شاشات نقاط البيع.</span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1251,8 +1405,7 @@ export const HrPayrollTab: React.FC = () => {
               borderColor: 'var(--border-color)',
             }}
           >
-            <div className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-              <Calendar className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
+            <div className="text-xs font-bold text-slate-200">
               <span>إعدادات شفت العمل اليومي والإجازة الأسبوعية</span>
             </div>
 
@@ -1360,7 +1513,7 @@ export const HrPayrollTab: React.FC = () => {
                         : 'bg-slate-800 text-slate-400 border-slate-700'
                     }`}
                   >
-                    {employeeForm.is_paid_weekly_off ? 'مدفوعة الأجر ✅' : 'غير مدفوعة ❌'}
+                    {employeeForm.is_paid_weekly_off ? 'مدفوعة الأجر' : 'غير مدفوعة'}
                   </span>
                 </label>
                 <p className="text-[10px] text-slate-400 font-medium">
@@ -1464,11 +1617,13 @@ export const HrPayrollTab: React.FC = () => {
               }}
             >
               <option value="">-- اختر الموظف --</option>
-              {employees.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.name} ({emp.role})
-                </option>
-              ))}
+              {(employees || [])
+                .filter((emp) => !isOwnerEmployee(emp))
+                .map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({emp.role})
+                  </option>
+                ))}
             </select>
           </div>
 
@@ -1571,11 +1726,13 @@ export const HrPayrollTab: React.FC = () => {
               }}
             >
               <option value="">-- اختر الموظف --</option>
-              {employees.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.name}
-                </option>
-              ))}
+              {(employees || [])
+                .filter((emp) => !isOwnerEmployee(emp))
+                .map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.name} ({emp.role})
+                  </option>
+                ))}
             </select>
           </div>
 
@@ -1831,20 +1988,17 @@ export const HrPayrollTab: React.FC = () => {
 
             {/* Negative Balance / Debt Warning Alert Box */}
             {payrollCalc.financial_breakdown.net_payable_salary < 0 && (
-              <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/50 text-rose-200 text-xs flex items-start gap-3 animate-in zoom-in-95">
-                <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <div className="font-bold text-rose-300 text-sm">
-                    تنبيه: إجمالي السلف والخصومات يتجاوز المستحقات — الموظف مدين للمغسلة
-                  </div>
-                  <div className="text-[11px] text-rose-300/90 leading-relaxed">
-                    المبلغ المطلوب من الموظف هو{' '}
-                    <strong className="font-mono text-white underline">
-                      {formatEGP(Math.abs(payrollCalc.financial_breakdown.net_payable_salary))}
-                    </strong>
-                    . عند اعتماد التصفية، سيتم تسجيل الصرف كـ <strong>0.00 ج.م</strong> بالخزينة،
-                    وترحيل المديونية تلقائياً كسلفة للشهر القادم.
-                  </div>
+              <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/50 text-rose-200 text-xs space-y-1 animate-in zoom-in-95">
+                <div className="font-bold text-rose-300 text-sm">
+                  تنبيه: إجمالي السلف والخصومات يتجاوز المستحقات — الموظف مدين للمغسلة
+                </div>
+                <div className="text-[11px] text-rose-300/90 leading-relaxed">
+                  المبلغ المطلوب من الموظف هو{' '}
+                  <strong className="font-mono text-white underline">
+                    {formatEGP(Math.abs(payrollCalc.financial_breakdown.net_payable_salary))}
+                  </strong>
+                  . عند اعتماد التصفية، سيتم تسجيل الصرف كـ <strong>0.00 ج.م</strong> بالخزينة،
+                  وترحيل المديونية تلقائياً كسلفة للشهر القادم.
                 </div>
               </div>
             )}
@@ -1896,7 +2050,6 @@ export const HrPayrollTab: React.FC = () => {
                   disabled={submitting}
                   className="flex items-center gap-1.5 px-5 py-2.5 bg-gradient-to-r from-amber-600 to-rose-600 hover:from-amber-700 hover:to-rose-700 text-white rounded-xl text-xs font-black shadow-lg shadow-rose-600/20 disabled:opacity-50"
                 >
-                  <ArrowUpRight className="w-4 h-4" />
                   <span>{submitting ? 'جاري الترحيل...' : 'اعتماد وترحيل المديونية للشهر القادم'}</span>
                 </button>
               ) : (
@@ -1906,7 +2059,6 @@ export const HrPayrollTab: React.FC = () => {
                   disabled={submitting}
                   className="flex items-center gap-1.5 px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs font-black shadow-lg shadow-emerald-500/20 disabled:opacity-50"
                 >
-                  <CheckCircle2 className="w-4 h-4" />
                   <span>{submitting ? 'جاري الاعتماد...' : 'اعتماد الصرف وتصفية الراتب'}</span>
                 </button>
               )}
@@ -1928,16 +2080,13 @@ export const HrPayrollTab: React.FC = () => {
           maxWidth="md"
         >
           <div className="space-y-4 text-xs">
-            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200 flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <div className="font-bold text-sm text-rose-300">تحذير حذف سجل الموظف نهائياً</div>
-                <p>
-                  أنت على وشك حذف الموظف <strong className="text-white">({employeeToDelete.name})</strong>،
-                  المسمى الوظيفي: <strong className="text-white">({employeeToDelete.role})</strong>.
-                  سيتم حذف سجلات الحضور والانصراف والحركات المالية وسندات الصرف الخاصة به.
-                </p>
-              </div>
+            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200 space-y-1">
+              <div className="font-bold text-sm text-rose-300">تحذير حذف سجل الموظف نهائياً</div>
+              <p>
+                أنت على وشك حذف الموظف <strong className="text-white">({employeeToDelete.name})</strong>،
+                المسمى الوظيفي: <strong className="text-white">({employeeToDelete.role})</strong>.
+                سيتم حذف سجلات الحضور والانصراف والحركات المالية وسندات الصرف الخاصة به.
+              </p>
             </div>
 
             <div className="grid grid-cols-2 gap-2.5 pt-2">
@@ -1960,10 +2109,8 @@ export const HrPayrollTab: React.FC = () => {
                 disabled={isDeletingEmp}
                 className="flex items-center justify-center gap-1.5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold shadow-lg shadow-rose-600/30 transition-all disabled:opacity-50"
               >
-                {isDeletingEmp ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Trash2 className="w-4 h-4" />
+                {isDeletingEmp && (
+                  <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
                 )}
                 <span>تأكيد الحذف النهائي</span>
               </button>
@@ -1983,16 +2130,13 @@ export const HrPayrollTab: React.FC = () => {
           maxWidth="md"
         >
           <div className="space-y-4 text-xs">
-            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200 flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <div className="font-bold text-sm text-rose-300">حذف سجل حضور وانصراف</div>
-                <p>
-                  هل أنت متأكد من حذف سجل الحضور للموظف <strong className="text-white">({attendanceToDelete.employee_name})</strong> لتاريخ{' '}
-                  <strong className="text-white font-mono">{attendanceToDelete.work_date}</strong> بإجمالي ساعات (
-                  <strong className="text-white font-mono">{attendanceToDelete.actual_hours}h</strong>)؟
-                </p>
-              </div>
+            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200 space-y-1">
+              <div className="font-bold text-sm text-rose-300">حذف سجل حضور وانصراف</div>
+              <p>
+                هل أنت متأكد من حذف سجل الحضور للموظف <strong className="text-white">({attendanceToDelete.employee_name})</strong> لتاريخ{' '}
+                <strong className="text-white font-mono">{attendanceToDelete.work_date}</strong> بإجمالي ساعات (
+                <strong className="text-white font-mono">{attendanceToDelete.actual_hours}h</strong>)؟
+              </p>
             </div>
 
             <div className="grid grid-cols-2 gap-2.5 pt-2">
@@ -2015,10 +2159,8 @@ export const HrPayrollTab: React.FC = () => {
                 disabled={isDeletingAtt}
                 className="flex items-center justify-center gap-1.5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold shadow-lg shadow-rose-600/30 transition-all disabled:opacity-50"
               >
-                {isDeletingAtt ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Trash2 className="w-4 h-4" />
+                {isDeletingAtt && (
+                  <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
                 )}
                 <span>تأكيد الحذف</span>
               </button>
@@ -2038,8 +2180,7 @@ export const HrPayrollTab: React.FC = () => {
           maxWidth="md"
         >
           <div className="space-y-4 text-xs">
-            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200 flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200">
               <div className="space-y-1">
                 <div className="font-bold text-sm text-rose-300">حذف حركة مالية</div>
                 <p>
@@ -2070,16 +2211,34 @@ export const HrPayrollTab: React.FC = () => {
                 disabled={isDeletingTrans}
                 className="flex items-center justify-center gap-1.5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold shadow-lg shadow-rose-600/30 transition-all disabled:opacity-50"
               >
-                {isDeletingTrans ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Trash2 className="w-4 h-4" />
+                {isDeletingTrans && (
+                  <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
                 )}
                 <span>تأكيد الحذف</span>
               </button>
             </div>
           </div>
         </Modal>
+      )}
+
+      {/* Settle Payroll Confirmation Modal */}
+      {selectedEmployee && payrollCalc && (
+        <ConfirmModal
+          isOpen={isPayrollConfirmOpen}
+          onClose={() => {
+            if (!submitting) setIsPayrollConfirmOpen(false);
+          }}
+          onConfirm={handleExecuteSettlePayroll}
+          title={payrollCalc.financial_breakdown.net_payable_salary < 0 ? 'اعتماد تصفية وترحيل مديونية' : 'تأكيد اعتماد وصرف الراتب'}
+          message={
+            payrollCalc.financial_breakdown.net_payable_salary < 0
+              ? `الموظف (${selectedEmployee.name}) مدين للمغسلة بمبلغ ${formatEGP(Math.abs(payrollCalc.financial_breakdown.net_payable_salary))} (إجمالي السلف والخصومات تجاوز المستحقات). سيتم تسجيل صرف 0 ج.م في الخزينة وترحيل المبلغ المتبقي كسلفة للشهر القادم.`
+              : `هل أنت متأكد من رغبتك في اعتماد صرف راتب الموظف (${selectedEmployee.name}) بصافي مستحق قدره ${formatEGP(payrollCalc.financial_breakdown.net_payable_salary)}؟ سيتم قيد سند الصرف تلقائياً في الخزينة.`
+          }
+          confirmLabel={payrollCalc.financial_breakdown.net_payable_salary < 0 ? 'اعتماد وترحيل المديونية' : 'تأكيد صرف الراتب'}
+          variant={payrollCalc.financial_breakdown.net_payable_salary < 0 ? 'warning' : 'danger'}
+          isLoading={submitting}
+        />
       )}
     </div>
   );

@@ -1,5 +1,7 @@
 import { Employee, Attendance } from '../types/index.js';
 import { FALLBACK_EMPLOYEES } from '../api/mockFallbacks.js';
+import { notifyEmployeeCheckIn, notifyEmployeeCheckOut } from './telegramNotifications.js';
+import { getAllFromDb } from '../db/indexedDB.js';
 
 export interface LocalAttendanceRecord {
   status: 'not_attended' | 'active_shift' | 'completed_shift';
@@ -15,8 +17,27 @@ export type LocalAttendanceMap = Record<string, LocalAttendanceRecord>;
 const LIVE_STATUS_KEY = 'cw_active_attendance_logs';
 const RECORDS_KEY = 'cw_attendance_records';
 
-export const getTodayDateStr = (): string => {
-  return new Date().toISOString().slice(0, 10);
+export const getTodayDateStr = (date: Date = new Date()): string => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+/**
+ * Check if an employee profile represents the owner / executive management
+ */
+export const isOwnerEmployee = (emp?: { name?: string; role?: string } | null): boolean => {
+  if (!emp) return false;
+  const name = (emp.name || '').trim();
+  const role = (emp.role || '').trim();
+  return (
+    name === 'مستر فتحي' ||
+    name.includes('فتحي') ||
+    role.includes('مالك') ||
+    role.includes('مدير عام') ||
+    role.toLowerCase().includes('owner')
+  );
 };
 
 export const getCustomStoredEmployees = (): Employee[] => {
@@ -44,7 +65,7 @@ export const getEmployeeStandardDailyHours = (employee?: Employee): number => {
 };
 
 /**
- * Computes exact shift hours, overtime, and deductions
+ * Computes exact shift hours, overtime, and deductions with stale-shift protection (16h cap)
  */
 export const computeShiftHoursBreakdown = (
   checkIn: string | Date,
@@ -57,18 +78,34 @@ export const computeShiftHoursBreakdown = (
 } => {
   const standardDaily = getEmployeeStandardDailyHours(employee);
   const inDate = new Date(checkIn);
-  const outDate = checkOut ? new Date(checkOut) : new Date();
-
-  const diffMs = Math.max(outDate.getTime() - inDate.getTime(), 0);
-  const actualHours = Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+  const now = new Date();
 
   if (!checkOut) {
     // Open shift
+    const elapsedHours = Math.max((now.getTime() - inDate.getTime()) / (1000 * 60 * 60), 0);
+    // Stale shift guard: if older than 16 hours, cap to standard daily shift (e.g. 8.0h)
+    if (elapsedHours > 16) {
+      return {
+        actualHours: standardDaily,
+        overtimeHours: 0,
+        deductedHours: 0,
+      };
+    }
+    const actualHours = Number(elapsedHours.toFixed(2));
     return {
       actualHours,
       overtimeHours: actualHours > standardDaily ? Number((actualHours - standardDaily).toFixed(2)) : 0,
       deductedHours: 0,
     };
+  }
+
+  const outDate = new Date(checkOut);
+  const diffMs = Math.max(outDate.getTime() - inDate.getTime(), 0);
+  let actualHours = Number((diffMs / (1000 * 60 * 60)).toFixed(2));
+
+  // Stale shift guard: single shift duration should never exceed 16 hours
+  if (actualHours > 16) {
+    actualHours = standardDaily;
   }
 
   if (actualHours > standardDaily) {
@@ -218,7 +255,7 @@ export const createOrUpdateAttendanceRecord = (
   const emp = pool.find((e) => e.id === data.employee_id);
 
   const breakdown = computeShiftHoursBreakdown(data.check_in, data.check_out, emp);
-  const workDate = data.work_date || new Date(data.check_in).toISOString().slice(0, 10);
+  const workDate = data.work_date || (data.check_in ? getTodayDateStr(new Date(data.check_in)) : getTodayDateStr());
 
   const existingIdx = data.id
     ? current.findIndex((a) => a.id === data.id)
@@ -275,55 +312,274 @@ export const deleteStoredAttendanceRecord = (id: string): boolean => {
 };
 
 /**
+ * Check if an employee has a pending CLOCK_ACTION in IndexedDB sync queue
+ */
+export const getPendingClockActionEmployeeIds = async (): Promise<Set<string>> => {
+  const pendingSet = new Set<string>();
+  try {
+    const queue = await getAllFromDb('sync_queue');
+    if (Array.isArray(queue)) {
+      queue.forEach((item) => {
+        if (
+          item.action_type === 'CLOCK_ACTION' &&
+          (item.status === 'pending' || item.status === 'in_flight') &&
+          item.payload?.employee_id
+        ) {
+          pendingSet.add(item.payload.employee_id);
+        }
+      });
+    }
+  } catch {}
+  return pendingSet;
+};
+
+/**
+ * Synchronize central server attendance records or today's status map into local storage
+ * and update the reactive state across devices with strict authoritative server precedence.
+ */
+export const syncServerAttendanceState = async (
+  records?: Attendance[],
+  statusMap?: Record<string, { status: 'not_attended' | 'active_shift' | 'completed_shift'; label?: string; badgeColor?: string; check_in?: string; check_out?: string }>
+): Promise<void> => {
+  if (typeof window === 'undefined') return;
+  const today = getTodayDateStr();
+  const pool = getCustomStoredEmployees();
+  const pendingClockEmps = await getPendingClockActionEmployeeIds();
+
+  // 1. If records are provided from /hr/attendance, merge/save them
+  if (Array.isArray(records) && records.length > 0) {
+    const currentRecords = getStoredAttendanceRecords();
+    const mergedMap = new Map<string, Attendance>();
+
+    // Put current records in map
+    currentRecords.forEach((r) => {
+      mergedMap.set(r.id, r);
+    });
+    // Overlay authoritative server records
+    records.forEach((r) => {
+      mergedMap.set(r.id, r);
+    });
+
+    const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
+      const timeA = new Date(a.check_in || a.created_at || a.work_date).getTime();
+      const timeB = new Date(b.check_in || b.created_at || b.work_date).getTime();
+      return timeB - timeA;
+    });
+
+    try {
+      localStorage.setItem(RECORDS_KEY, JSON.stringify(mergedList));
+    } catch {}
+  }
+
+  // 2. Build or update live status map with strict server authority
+  if (statusMap && typeof statusMap === 'object') {
+    let liveMap: LocalAttendanceMap = {};
+    try {
+      const raw = localStorage.getItem(LIVE_STATUS_KEY);
+      if (raw) {
+        liveMap = JSON.parse(raw) || {};
+      }
+    } catch {}
+
+    const currentRecords = getStoredAttendanceRecords();
+    let recordsModified = false;
+
+    pool.forEach((emp) => {
+      const empId = emp.id;
+
+      // CRITICAL SAFETY LOCK: Preserve local offline action if queued in outbox!
+      if (pendingClockEmps.has(empId)) {
+        return;
+      }
+
+      const serverItem = statusMap[empId];
+      if (serverItem && serverItem.status) {
+        liveMap[empId] = {
+          status: serverItem.status,
+          check_in: serverItem.check_in,
+          check_out: serverItem.check_out,
+          work_date: today,
+          updated_at: new Date().toISOString(),
+        };
+
+        // Reconcile and close orphaned open records in cw_attendance_records
+        if (serverItem.status === 'completed_shift' || serverItem.status === 'not_attended') {
+          currentRecords.forEach((r) => {
+            if (
+              r.employee_id === empId &&
+              (r.work_date === today || (r.check_in && r.check_in.slice(0, 10) === today)) &&
+              !r.check_out
+            ) {
+              r.check_out = serverItem.check_out || new Date().toISOString();
+              recordsModified = true;
+            }
+          });
+        }
+      } else {
+        // If employee not active on server and has no existing today state, mark not_attended
+        if (!liveMap[empId] || liveMap[empId].work_date !== today) {
+          liveMap[empId] = {
+            status: 'not_attended',
+            work_date: today,
+            updated_at: new Date().toISOString(),
+          };
+        }
+      }
+    });
+
+    if (recordsModified) {
+      try {
+        localStorage.setItem(RECORDS_KEY, JSON.stringify(currentRecords));
+      } catch {}
+    }
+
+    try {
+      localStorage.setItem(LIVE_STATUS_KEY, JSON.stringify(liveMap));
+    } catch {}
+  }
+};
+
+/**
  * Get all current attendance records from localStorage for today.
  */
 export const getLocalAttendanceMap = (employeesList?: Employee[]): LocalAttendanceMap => {
   const today = getTodayDateStr();
   const pool = (employeesList && employeesList.length > 0) ? employeesList : getCustomStoredEmployees();
 
+  const isShiftValid = (shift: any) => {
+    if (!shift || shift.status === 'closed') return false;
+    const shiftStart = shift.shift_start || shift.created_at;
+    if (!shiftStart) return true;
+    const ageHours = (Date.now() - new Date(shiftStart).getTime()) / (1000 * 60 * 60);
+    return ageHours < 24;
+  };
+
+  let activeCashier: { id: string; name?: string; role?: string; shift_start?: string } | null = null;
   try {
-    const raw = localStorage.getItem(LIVE_STATUS_KEY);
-    if (raw) {
-      const parsed: LocalAttendanceMap = JSON.parse(raw);
-      const sample = Object.values(parsed)[0];
-      if (sample && sample.work_date === today) {
-        return parsed;
+    if (typeof window !== 'undefined') {
+      const cashierRaw = localStorage.getItem('pos_active_cashier');
+      if (cashierRaw) {
+        const parsedCashier = JSON.parse(cashierRaw);
+        if (parsedCashier?.id && !isOwnerEmployee(parsedCashier) && isShiftValid(parsedCashier)) {
+          activeCashier = parsedCashier;
+        }
+      }
+      if (!activeCashier) {
+        const syncedRaw = localStorage.getItem('cw_active_shift');
+        if (syncedRaw) {
+          const parsedSynced = JSON.parse(syncedRaw);
+          const cashierId = parsedSynced?.cashier_id || parsedSynced?.id;
+          if (cashierId && !isOwnerEmployee(parsedSynced) && isShiftValid(parsedSynced)) {
+            activeCashier = {
+              id: cashierId,
+              name: parsedSynced.cashier_name || parsedSynced.name,
+              role: parsedSynced.cashier_role || parsedSynced.role,
+              shift_start: parsedSynced.shift_start,
+            };
+          }
+        }
       }
     }
   } catch {}
 
-  const initialMap: LocalAttendanceMap = {};
-  let activeCashierId: string | null = null;
+  let map: LocalAttendanceMap = {};
+  let hasValidTodayLogs = false;
+
   try {
-    const cashierRaw = localStorage.getItem('pos_active_cashier');
-    if (cashierRaw) {
-      const parsedCashier = JSON.parse(cashierRaw);
-      if (parsedCashier?.id) activeCashierId = parsedCashier.id;
+    if (typeof window !== 'undefined') {
+      const raw = localStorage.getItem(LIVE_STATUS_KEY);
+      if (raw) {
+        const parsed: LocalAttendanceMap = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const values = Object.values(parsed);
+          if (values.length > 0 && values.some((r) => r && r.work_date === today)) {
+            map = parsed;
+            hasValidTodayLogs = true;
+          }
+        }
+      }
     }
   } catch {}
 
-  pool.forEach((emp) => {
-    if (emp.id === activeCashierId) {
-      initialMap[emp.id] = {
-        status: 'active_shift',
-        check_in: new Date().toISOString(),
-        work_date: today,
-        updated_at: new Date().toISOString(),
-      };
-    } else {
-      initialMap[emp.id] = {
+  if (!hasValidTodayLogs) {
+    map = {};
+    pool.forEach((emp) => {
+      map[emp.id] = {
         status: 'not_attended',
         work_date: today,
         updated_at: new Date().toISOString(),
       };
+    });
+
+    // Cross-reference today's attendance records from cw_attendance_records only if no verified today live logs
+    try {
+      const rawRecords = typeof window !== 'undefined' ? localStorage.getItem(RECORDS_KEY) : null;
+      if (rawRecords) {
+        const parsedRecords: Attendance[] = JSON.parse(rawRecords);
+        if (Array.isArray(parsedRecords)) {
+          const todayRecs = parsedRecords.filter((r) => (r.work_date === today || (r.check_in && r.check_in.slice(0, 10) === today)) && r.employee_id);
+          todayRecs.sort((a, b) => new Date(b.check_in || 0).getTime() - new Date(a.check_in || 0).getTime());
+          
+          const seen = new Set<string>();
+          todayRecs.forEach((r) => {
+            if (!seen.has(r.employee_id)) {
+              seen.add(r.employee_id);
+              if (!r.check_out) {
+                map[r.employee_id] = {
+                  status: 'active_shift',
+                  check_in: r.check_in || map[r.employee_id]?.check_in || new Date().toISOString(),
+                  work_date: today,
+                  updated_at: new Date().toISOString(),
+                };
+              } else {
+                map[r.employee_id] = {
+                  status: 'completed_shift',
+                  check_in: r.check_in,
+                  check_out: r.check_out,
+                  hours_worked: r.actual_hours,
+                  work_date: today,
+                  updated_at: new Date().toISOString(),
+                };
+              }
+            }
+          });
+        }
+      }
+    } catch {}
+  } else {
+    // Ensure all pool employees are present in the map
+    pool.forEach((emp) => {
+      if (!map[emp.id]) {
+        map[emp.id] = {
+          status: 'not_attended',
+          work_date: today,
+          updated_at: new Date().toISOString(),
+        };
+      }
+    });
+  }
+
+  // If active cashier exists with a verified open session, guarantee active_shift status
+  if (activeCashier && activeCashier.id) {
+    const existingRec = map[activeCashier.id];
+    const shiftStart = activeCashier.shift_start || existingRec?.check_in || new Date().toISOString();
+
+    if (!existingRec || existingRec.status !== 'active_shift' || existingRec.work_date !== today) {
+      map[activeCashier.id] = {
+        status: 'active_shift',
+        check_in: existingRec?.check_in || shiftStart,
+        work_date: today,
+        updated_at: new Date().toISOString(),
+      };
+      try {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(LIVE_STATUS_KEY, JSON.stringify(map));
+        }
+      } catch {}
     }
-  });
+  }
 
-  try {
-    localStorage.setItem(LIVE_STATUS_KEY, JSON.stringify(initialMap));
-  } catch {}
-
-  return initialMap;
+  return map;
 };
 
 /**
@@ -331,8 +587,8 @@ export const getLocalAttendanceMap = (employeesList?: Employee[]): LocalAttendan
  */
 export const saveLocalAttendanceMap = (map: LocalAttendanceMap): void => {
   try {
-    localStorage.setItem(LIVE_STATUS_KEY, JSON.stringify(map));
     if (typeof window !== 'undefined') {
+      localStorage.setItem(LIVE_STATUS_KEY, JSON.stringify(map));
       window.dispatchEvent(new CustomEvent('cw_attendance_updated', { detail: map }));
       window.dispatchEvent(new Event('cw_attendance_updated'));
       window.dispatchEvent(new Event('storage'));
@@ -341,22 +597,26 @@ export const saveLocalAttendanceMap = (map: LocalAttendanceMap): void => {
 };
 
 /**
- * Auto Clock-In Cashier on POS unlock / login
+ * Auto Clock-In Cashier on POS unlock / login / load
  */
 export const autoClockInCashier = (
-  employee: { id: string; name?: string; role?: string },
+  employee: { id?: string; cashier_id?: string; name?: string; cashier_name?: string; role?: string; cashier_role?: string; shift_start?: string },
   employeesList?: Employee[]
 ): void => {
-  if (!employee || !employee.id) return;
+  const empId = employee?.id || employee?.cashier_id;
+  if (!empId) return;
+  const empName = employee?.name || employee?.cashier_name || 'الكاشير';
+  const empRole = employee?.role || employee?.cashier_role || 'كاشير';
   const today = getTodayDateStr();
-  const map = getLocalAttendanceMap(employeesList);
-  const current = map[employee.id];
+  const pool = (employeesList && employeesList.length > 0) ? employeesList : getCustomStoredEmployees();
+  const map = getLocalAttendanceMap(pool);
+  const current = map[empId];
 
-  if (!current || current.status !== 'active_shift') {
-    const nowIso = new Date().toISOString();
-    map[employee.id] = {
+  const nowIso = employee.shift_start || new Date().toISOString();
+  if (!current || current.status !== 'active_shift' || current.work_date !== today) {
+    map[empId] = {
       status: 'active_shift',
-      check_in: nowIso,
+      check_in: current?.check_in || nowIso,
       work_date: today,
       updated_at: nowIso,
     };
@@ -365,18 +625,65 @@ export const autoClockInCashier = (
     // Also register in historical records
     createOrUpdateAttendanceRecord(
       {
-        employee_id: employee.id,
+        employee_id: empId,
         work_date: today,
-        check_in: nowIso,
+        check_in: current?.check_in || nowIso,
         notes: 'تسجيل دخول تلقائي عند فتح شاشة الكاشير',
       },
-      employeesList
+      pool
     );
+
+    // Dispatch automated Telegram notification
+    notifyEmployeeCheckIn(empName, empRole).catch(() => {});
   }
 };
 
 /**
- * Record clock-in or clock-out with anti-duplication checks
+ * Get detailed shift stats for an employee for today
+ */
+export const getEmployeeTodayShiftStats = (
+  employeeId: string,
+  employeesList?: Employee[]
+): {
+  completedShiftsCount: number;
+  hasOpenShift: boolean;
+  openShiftCheckIn?: string;
+  nextShiftNumber: number;
+  todayTotalHours: number;
+} => {
+  const today = getTodayDateStr();
+  const records = getStoredAttendanceRecords({
+    employee_id: employeeId,
+    startDate: today,
+    endDate: today,
+  });
+
+  let completedShiftsCount = 0;
+  let hasOpenShift = false;
+  let openShiftCheckIn: string | undefined = undefined;
+  let todayTotalHours = 0;
+
+  records.forEach((r) => {
+    if (r.check_out) {
+      completedShiftsCount++;
+      todayTotalHours += Number(r.actual_hours) || 0;
+    } else {
+      hasOpenShift = true;
+      openShiftCheckIn = r.check_in;
+    }
+  });
+
+  return {
+    completedShiftsCount,
+    hasOpenShift,
+    openShiftCheckIn,
+    nextShiftNumber: completedShiftsCount + (hasOpenShift ? 0 : 1),
+    todayTotalHours: Number(todayTotalHours.toFixed(2)),
+  };
+};
+
+/**
+ * Record clock-in or clock-out with multi-shift support and anti-duplication checks
  */
 export const recordLocalClockAction = (
   employeeId: string,
@@ -387,6 +694,7 @@ export const recordLocalClockAction = (
   action: string;
   employee_name: string;
   time: string;
+  shift_number: number;
   hours_worked?: number;
   overtime_hours?: number;
   deducted_hours?: number;
@@ -406,14 +714,30 @@ export const recordLocalClockAction = (
   const name = employeeName || emp?.name || 'الموظف';
   const now = new Date();
   const timeFormatted = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+  const shiftStats = getEmployeeTodayShiftStats(employeeId, pool);
 
   if (action === 'check_in') {
     if (currentRecord.status === 'active_shift') {
-      throw new Error(`الموظف (${name}) مسجل حضور بالفعل للشفت الحالي ولم يسجل انصراف بعد.`);
+      const checkInTime = currentRecord.check_in ? new Date(currentRecord.check_in).getTime() : 0;
+      const elapsedHours = (now.getTime() - checkInTime) / (1000 * 60 * 60);
+      if (elapsedHours > 16) {
+        // Auto-close stale unclosed previous shift
+        createOrUpdateAttendanceRecord(
+          {
+            employee_id: employeeId,
+            work_date: currentRecord.work_date || today,
+            check_in: currentRecord.check_in || new Date(now.getTime() - 8 * 3600 * 1000).toISOString(),
+            check_out: new Date(checkInTime + 8 * 3600 * 1000).toISOString(),
+            notes: 'إغلاق تلقائي لشفت معلق سابق',
+          },
+          pool
+        );
+      } else {
+        throw new Error(`الموظف (${name}) مسجل حضور بالفعل بالوردية الحالية ولم يسجل انصراف بعد.`);
+      }
     }
-    if (currentRecord.status === 'completed_shift') {
-      throw new Error(`تم تسجيل حضور وانصراف الموظف (${name}) بالفعل اليوم.`);
-    }
+
+    const shiftNumber = shiftStats.completedShiftsCount + 1;
 
     map[employeeId] = {
       status: 'active_shift',
@@ -429,35 +753,42 @@ export const recordLocalClockAction = (
         employee_id: employeeId,
         work_date: today,
         check_in: now.toISOString(),
-        notes: `تسجيل حضور PIN في ${timeFormatted}`,
+        notes: `تسجيل حضور الوردية (${shiftNumber}) عبر PIN في ${timeFormatted}`,
       },
       pool
     );
+
+    // Dispatch automated Telegram notification
+    notifyEmployeeCheckIn(name, emp?.role).catch(() => {});
 
     return {
       action: 'check_in',
       employee_name: name,
       time: now.toISOString(),
-      message: `تم تسجيل بدء الشفت (حضور) بنجاح للموظف: ${name} في تمام الساعة ${timeFormatted}`,
+      shift_number: shiftNumber,
+      message: `تم تسجيل حضور الوردية رقم (${shiftNumber}) بنجاح للموظف: ${name} في تمام الساعة ${timeFormatted}`,
     };
   } else {
     // Action: check_out
-    if (currentRecord.status === 'completed_shift') {
-      throw new Error(`الموظف (${name}) مسجل انصراف بالفعل مسبقاً لهذا الشفت.`);
-    }
-    if (currentRecord.status === 'not_attended') {
-      throw new Error(`الموظف (${name}) غير مسجل حضور اليوم لتسجيل انصرافه.`);
+    const records = getStoredAttendanceRecords({ employee_id: employeeId, startDate: today });
+    const openRecord = records.find((r) => !r.check_out);
+
+    if (!openRecord && currentRecord.status !== 'active_shift') {
+      throw new Error(`الموظف (${name}) غير مسجل حضور حالياً لإتمام الإنصراف.`);
     }
 
-    const checkInDate = currentRecord.check_in
+    const checkInDate = openRecord?.check_in
+      ? new Date(openRecord.check_in)
+      : currentRecord.check_in
       ? new Date(currentRecord.check_in)
       : new Date(now.getTime() - 8 * 3600 * 1000);
 
     const breakdown = computeShiftHoursBreakdown(checkInDate, now, emp);
+    const shiftNumber = Math.max(shiftStats.completedShiftsCount + 1, 1);
 
     map[employeeId] = {
       status: 'completed_shift',
-      check_in: currentRecord.check_in || checkInDate.toISOString(),
+      check_in: checkInDate.toISOString(),
       check_out: now.toISOString(),
       hours_worked: breakdown.actualHours,
       work_date: today,
@@ -468,23 +799,28 @@ export const recordLocalClockAction = (
 
     createOrUpdateAttendanceRecord(
       {
+        id: openRecord?.id,
         employee_id: employeeId,
         work_date: today,
-        check_in: currentRecord.check_in || checkInDate.toISOString(),
+        check_in: checkInDate.toISOString(),
         check_out: now.toISOString(),
-        notes: `تسجيل انصراف PIN في ${timeFormatted}`,
+        notes: `تسجيل انصراف الوردية (${shiftNumber}) عبر PIN في ${timeFormatted}`,
       },
       pool
     );
+
+    // Dispatch automated Telegram notification
+    notifyEmployeeCheckOut(name, breakdown.actualHours).catch(() => {});
 
     return {
       action: 'check_out',
       employee_name: name,
       time: now.toISOString(),
+      shift_number: shiftNumber,
       hours_worked: breakdown.actualHours,
       overtime_hours: breakdown.overtimeHours,
       deducted_hours: breakdown.deductedHours,
-      message: `تم تسجيل إنهاء الشفت (انصراف) بنجاح للموظف: ${name}. إجمالي ساعات العمل: ${breakdown.actualHours} ساعة ${
+      message: `تم تسجيل إنهاء الوردية رقم (${shiftNumber}) بنجاح للموظف: ${name}. إجمالي ساعات العمل: ${breakdown.actualHours} ساعة ${
         breakdown.overtimeHours > 0 ? `(+${breakdown.overtimeHours} ساعة إضافي)` : ''
       }`,
     };
@@ -530,7 +866,9 @@ export const clockOutAllActiveEmployees = (
         pool
       );
 
-      clockedOutNames.push(emp?.name || empId);
+      const empName = emp?.name || empId;
+      clockedOutNames.push(empName);
+      notifyEmployeeCheckOut(empName, breakdown.actualHours).catch(() => {});
     }
   });
 
@@ -582,18 +920,66 @@ export const clockOutSingleCashier = (
     },
     pool
   );
+
+  notifyEmployeeCheckOut(emp?.name || cashierId, breakdown.actualHours).catch(() => {});
 };
 
 /**
- * Get active attended headcount (employees with active_shift status)
+ * Get active attended headcount (operational labor/staff with active_shift status)
+ * Strictly excludes Owner ("مستر فتحي") to represent true operational staff
  */
 export const getActiveAttendedHeadcount = (employeesList?: Employee[]): number => {
-  const map = getLocalAttendanceMap(employeesList);
-  return Object.values(map).filter((r) => r.status === 'active_shift').length;
+  const pool = (employeesList && employeesList.length > 0) ? employeesList : getCustomStoredEmployees();
+  const operationalStaff = pool.filter((e) => !isOwnerEmployee(e));
+  const map = getLocalAttendanceMap(operationalStaff);
+  const activeIds = new Set<string>();
+
+  Object.entries(map).forEach(([empId, r]) => {
+    const isStaff = operationalStaff.some((e) => e.id === empId);
+    if (isStaff && r && r.status === 'active_shift' && !r.check_out) {
+      activeIds.add(empId);
+    }
+  });
+
+  const isShiftValid = (shift: any) => {
+    if (!shift || shift.status === 'closed') return false;
+    const shiftStart = shift.shift_start || shift.created_at;
+    if (!shiftStart) return true;
+    const ageHours = (Date.now() - new Date(shiftStart).getTime()) / (1000 * 60 * 60);
+    return ageHours < 24;
+  };
+
+  // Verify pos_active_cashier and cw_active_shift directly to guarantee active cashier is counted ONLY if strictly valid & open
+  try {
+    if (typeof window !== 'undefined') {
+      const cashierRaw = localStorage.getItem('pos_active_cashier');
+      if (cashierRaw) {
+        const parsedCashier = JSON.parse(cashierRaw);
+        const cashierId = parsedCashier?.cashier_id || parsedCashier?.id;
+        if (cashierId && !isOwnerEmployee(parsedCashier) && isShiftValid(parsedCashier)) {
+          if (operationalStaff.some((e) => e.id === cashierId)) {
+            activeIds.add(cashierId);
+          }
+        }
+      }
+      const syncedRaw = localStorage.getItem('cw_active_shift');
+      if (syncedRaw) {
+        const parsedSynced = JSON.parse(syncedRaw);
+        const cashierId = parsedSynced?.cashier_id || parsedSynced?.id;
+        if (cashierId && !isOwnerEmployee(parsedSynced) && isShiftValid(parsedSynced)) {
+          if (operationalStaff.some((e) => e.id === cashierId)) {
+            activeIds.add(cashierId);
+          }
+        }
+      }
+    }
+  } catch {}
+
+  return activeIds.size;
 };
 
 /**
- * Get formatted status map for UI badges in ClockInOutModal and Attendance lists
+ * Get formatted status map for UI badges in ClockInOutModal, HR Table, and Attendance lists
  */
 export const getFormattedTodayStatusMap = (
   employeesList?: Employee[]
@@ -605,39 +991,137 @@ export const getFormattedTodayStatusMap = (
     badgeColor: string;
     check_in?: string;
     check_out?: string;
+    isOwner?: boolean;
   }
 > => {
   const map = getLocalAttendanceMap(employeesList);
   const pool = (employeesList && employeesList.length > 0) ? employeesList : getCustomStoredEmployees();
 
+  const isShiftValid = (shift: any) => {
+    if (!shift || shift.status === 'closed') return false;
+    const shiftStart = shift.shift_start || shift.created_at;
+    if (!shiftStart) return true;
+    const ageHours = (Date.now() - new Date(shiftStart).getTime()) / (1000 * 60 * 60);
+    return ageHours < 24;
+  };
+
+  let activeCashierId: string | null = null;
+  try {
+    if (typeof window !== 'undefined') {
+      const cashierRaw = localStorage.getItem('pos_active_cashier');
+      if (cashierRaw) {
+        const parsedCashier = JSON.parse(cashierRaw);
+        if (parsedCashier?.id && !isOwnerEmployee(parsedCashier) && isShiftValid(parsedCashier)) {
+          activeCashierId = parsedCashier.id;
+        }
+      }
+      if (!activeCashierId) {
+        const syncedRaw = localStorage.getItem('cw_active_shift');
+        if (syncedRaw) {
+          const parsedSynced = JSON.parse(syncedRaw);
+          const cid = parsedSynced?.cashier_id || parsedSynced?.id;
+          if (cid && !isOwnerEmployee(parsedSynced) && isShiftValid(parsedSynced)) {
+            activeCashierId = cid;
+          }
+        }
+      }
+    }
+  } catch {}
+
   const result: Record<string, any> = {};
 
   pool.forEach((emp) => {
-    const record = map[emp.id] || { status: 'not_attended', work_date: getTodayDateStr(), updated_at: '' };
-
-    if (record.status === 'active_shift') {
-      result[emp.id] = {
-        status: 'active_shift',
-        label: 'حاضر (شفت نشط)',
-        badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
-        check_in: record.check_in,
-      };
-    } else if (record.status === 'completed_shift') {
+    if (isOwnerEmployee(emp)) {
       result[emp.id] = {
         status: 'completed_shift',
-        label: 'تم الإنصراف (مكتمل)',
-        badgeColor: 'bg-slate-800 text-slate-400 border-slate-700',
+        label: 'إدارة المنشأة والملكية 👑',
+        badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+        isOwner: true,
+      };
+      return;
+    }
+
+    let record = map[emp.id];
+
+    if (activeCashierId && emp.id === activeCashierId && (!record || record.status !== 'active_shift')) {
+      record = {
+        status: 'active_shift',
+        check_in: record?.check_in || new Date().toISOString(),
+        work_date: getTodayDateStr(),
+        updated_at: new Date().toISOString(),
+      };
+    } else if (!record) {
+      record = { status: 'not_attended', work_date: getTodayDateStr(), updated_at: '' };
+    }
+
+    if (record?.status === 'active_shift') {
+      result[emp.id] = {
+        status: 'active_shift',
+        label: 'حاضر الآن (شفت نشط) 🟢',
+        badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+        check_in: record.check_in,
+        isOwner: false,
+      };
+    } else if (record?.status === 'completed_shift') {
+      result[emp.id] = {
+        status: 'completed_shift',
+        label: 'انصرف اليوم ⚪',
+        badgeColor: 'bg-slate-700/50 text-slate-300 border-slate-600',
         check_in: record.check_in,
         check_out: record.check_out,
+        isOwner: false,
       };
     } else {
       result[emp.id] = {
         status: 'not_attended',
-        label: 'لم يحضر اليوم',
-        badgeColor: 'bg-rose-500/10 text-rose-400 border-rose-500/30',
+        label: 'غير حاضر اليوم ❌',
+        badgeColor: 'bg-rose-500/10 text-rose-300/80 border-rose-500/20',
+        isOwner: false,
       };
     }
   });
 
   return result;
 };
+
+/**
+ * Purge stale/ghost attendance records from cw_attendance_records and LIVE_STATUS_KEY (> 24 hours old)
+ * and auto-close orphaned open shifts from previous days.
+ */
+export const purgeStaleAttendanceRecords = (maxAgeHours = 24): number => {
+  if (typeof window === 'undefined') return 0;
+  const today = getTodayDateStr();
+  const now = Date.now();
+  let purgedCount = 0;
+
+  try {
+    const raw = localStorage.getItem(RECORDS_KEY);
+    if (raw) {
+      const records: Attendance[] = JSON.parse(raw);
+      if (Array.isArray(records)) {
+        const updated = records.filter((r) => {
+          const recordTime = new Date(r.check_in || r.work_date || r.created_at || 0).getTime();
+          const ageHours = (now - recordTime) / (1000 * 60 * 60);
+
+          // Auto-close open records from previous days
+          if (!r.check_out && r.work_date && r.work_date < today) {
+            r.check_out = new Date(recordTime + 8 * 3600 * 1000).toISOString();
+            purgedCount++;
+            return true;
+          }
+          // Remove corrupted/phantom records older than 30 days without date
+          if (ageHours > 24 * 30 && !r.work_date) {
+            purgedCount++;
+            return false;
+          }
+          return true;
+        });
+
+        localStorage.setItem(RECORDS_KEY, JSON.stringify(updated));
+      }
+    }
+  } catch {}
+
+  return purgedCount;
+};
+

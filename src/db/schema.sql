@@ -74,6 +74,27 @@ CREATE TABLE IF NOT EXISTS service_recipes (
 );
 
 -- =============================================================================
+-- 3.1 سجل حركات المخزون والتدقيق (Inventory Transactions & Audit Trail)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS inventory_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    inventory_item_id UUID NOT NULL REFERENCES inventory_items(id) ON DELETE RESTRICT,
+    order_id UUID,
+    transaction_type VARCHAR(50) NOT NULL CHECK (transaction_type IN ('deduction_order', 'restock', 'manual_adjustment', 'cancel_restore')),
+    quantity_grams NUMERIC(12, 2) NOT NULL,
+    previous_stock_grams NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    new_stock_grams NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    cost_impact NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_transactions_item_id ON inventory_transactions(inventory_item_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_transactions_order_id ON inventory_transactions(order_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_transactions_created_at ON inventory_transactions(created_at);
+
+-- =============================================================================
 -- 4. إدارة الموظفين (Employees with PIN Code & Work Schedule)
 -- =============================================================================
 
@@ -82,6 +103,7 @@ CREATE TABLE IF NOT EXISTS employees (
     name VARCHAR(255) NOT NULL,
     phone VARCHAR(50),
     role VARCHAR(100) NOT NULL DEFAULT 'فني غسيل',
+    system_role VARCHAR(50) NOT NULL DEFAULT 'worker' CHECK (system_role IN ('worker', 'cashier', 'manager', 'owner')),
     hourly_rate NUMERIC(10, 2) NOT NULL DEFAULT 0.00 CHECK (hourly_rate >= 0),
     overtime_hourly_rate NUMERIC(10, 2) DEFAULT NULL,
     target_weekly_days INTEGER NOT NULL DEFAULT 6 CHECK (target_weekly_days BETWEEN 1 AND 7),
@@ -96,6 +118,7 @@ CREATE TABLE IF NOT EXISTS employees (
 );
 
 -- Add columns dynamically if table already exists in DB
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS system_role VARCHAR(50) NOT NULL DEFAULT 'worker';
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS pin_code VARCHAR(10) NOT NULL DEFAULT '1234';
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS weekly_off_day VARCHAR(30) NOT NULL DEFAULT 'الجمعة';
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS is_paid_weekly_off BOOLEAN NOT NULL DEFAULT false;
@@ -249,8 +272,9 @@ CREATE INDEX IF NOT EXISTS idx_orders_employee_id ON orders(assigned_employee_id
 CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_eta_status ON orders(eta_status);
 CREATE INDEX IF NOT EXISTS idx_orders_eta_uuid ON orders(eta_uuid);
-CREATE INDEX IF NOT EXISTS idx_eta_sync_queue_status_retry ON eta_sync_queue(status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_orders_shift_id ON orders(shift_id);
 CREATE INDEX IF NOT EXISTS idx_attendance_emp_date ON attendance(employee_id, work_date DESC);
+CREATE INDEX IF NOT EXISTS idx_attendance_active ON attendance(employee_id) WHERE check_out IS NULL;
 CREATE INDEX IF NOT EXISTS idx_emp_trans_emp_status ON employee_transactions(employee_id, status);
 CREATE INDEX IF NOT EXISTS idx_payroll_payouts_emp_period ON payroll_payouts(employee_id, period_start, period_end);
 
@@ -355,3 +379,49 @@ DROP TRIGGER IF EXISTS trg_expenses_updated_at ON expenses;
 CREATE TRIGGER trg_expenses_updated_at
     BEFORE UPDATE ON expenses
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- =============================================================================
+-- 13. إدارة الورديات وجلسات الكاشير (Shifts & Cashier Sessions)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS shifts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    shift_code VARCHAR(100) NOT NULL UNIQUE,
+    cashier_id UUID REFERENCES employees(id) ON DELETE SET NULL,
+    cashier_name VARCHAR(255) NOT NULL,
+    cashier_role VARCHAR(100) DEFAULT 'كاشير واستقبال',
+    shift_start TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    shift_end TIMESTAMPTZ,
+    opening_cash NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    gross_sales NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    cash_sales NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    card_sales NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    transfer_sales NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    total_orders INTEGER NOT NULL DEFAULT 0,
+    expected_cash NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    actual_cash NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    variance NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+    status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed')),
+    closing_notes TEXT,
+    approved_by VARCHAR(255),
+    is_end_of_day BOOLEAN NOT NULL DEFAULT false,
+    active_device_id VARCHAR(100),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE shifts ADD COLUMN IF NOT EXISTS active_device_id VARCHAR(100);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS shift_id UUID REFERENCES shifts(id) ON DELETE SET NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cashier_id UUID REFERENCES employees(id) ON DELETE SET NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS cashier_name VARCHAR(255);
+
+CREATE INDEX IF NOT EXISTS idx_shifts_status ON shifts(status);
+CREATE INDEX IF NOT EXISTS idx_shifts_start ON shifts(shift_start DESC);
+CREATE INDEX IF NOT EXISTS idx_shifts_cashier ON shifts(cashier_id);
+CREATE INDEX IF NOT EXISTS idx_orders_shift_id ON orders(shift_id);
+
+DROP TRIGGER IF EXISTS trg_shifts_updated_at ON shifts;
+CREATE TRIGGER trg_shifts_updated_at
+    BEFORE UPDATE ON shifts
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+

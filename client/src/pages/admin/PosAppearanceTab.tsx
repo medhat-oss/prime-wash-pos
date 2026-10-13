@@ -1,30 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  Palette,
-  Film,
-  Image as ImageIcon,
-  Sliders,
-  CheckCircle2,
-  RefreshCw,
-  Eye,
-  Layers,
-  Monitor,
-  Pipette,
-  Check,
-  UploadCloud,
-  Loader2,
-  Link2,
-} from 'lucide-react';
 import { settingsApi, uploadApi } from '../../api/client.js';
 import { PosSettings } from '../../types/index.js';
 import { useToast } from '../../components/Toast.js';
 import {
+  defaultTheme,
   applyThemeToRoot,
   broadcastThemeUpdate,
   parseColorAndAlpha,
   hexAndAlphaToRgba,
 } from '../../utils/theme.js';
 import { resolveMediaUrl } from '../../utils/formatters.js';
+import { FormSkeleton, ErrorState } from '../../components/ui/index.js';
 
 export const PosAppearanceTab: React.FC = () => {
   const toast = useToast();
@@ -88,9 +74,9 @@ export const PosAppearanceTab: React.FC = () => {
   };
 
   // Specialized handlers for Backgrounds and Border with Alpha
-  const cardBgParsed = parseColorAndAlpha(form.card_bg_color || 'rgba(15, 23, 42, 0.75)', '#0f172a', 0.75);
-  const borderParsed = parseColorAndAlpha(form.border_color || 'rgba(51, 65, 85, 0.6)', '#334155', 0.6);
-  const headerBgParsed = parseColorAndAlpha(form.header_bg_color || 'rgba(15, 23, 42, 0.85)', '#0f172a', 0.85);
+  const cardBgParsed = parseColorAndAlpha(form.card_bg_color || 'rgba(66, 0, 0, 0.82)', '#420000', 0.82);
+  const borderParsed = parseColorAndAlpha(form.border_color || 'rgba(194, 0, 0, 0.70)', '#c20000', 0.70);
+  const headerBgParsed = parseColorAndAlpha(form.header_bg_color || 'rgba(46, 0, 0, 0.85)', '#2e0000', 0.85);
 
   const handleCardBgChange = (newHex: string, newAlpha: number) => {
     const rgba = hexAndAlphaToRgba(newHex, newAlpha);
@@ -105,6 +91,23 @@ export const PosAppearanceTab: React.FC = () => {
   const handleHeaderBgChange = (newHex: string, newAlpha: number) => {
     const rgba = hexAndAlphaToRgba(newHex, newAlpha);
     handleFieldChange('header_bg_color', rgba);
+  };
+
+  const handleResetToDefault = () => {
+    const updated: PosSettings = {
+      ...form,
+      primary_color: '#bd0000',
+      secondary_color: '#570505',
+      accent_color: '#bd0000',
+      card_bg_color: 'rgba(66, 0, 0, 0.82)',
+      border_color: 'rgba(194, 0, 0, 0.70)',
+      app_bg_color: '#000000',
+      header_bg_color: 'rgba(46, 0, 0, 0.85)',
+      pos_background_opacity: 0.30,
+    };
+    setForm(updated);
+    applyThemeToRoot(updated);
+    toast.info('تم استعادة السمة الافتراضية (أحمر برايم واش). اضغط "حفظ وتطبيق" لتأكيد الحفظ على الخادم.', 'استعادة السمة الافتراضية');
   };
 
   const handleFileProcess = async (file: File) => {
@@ -193,7 +196,7 @@ export const PosAppearanceTab: React.FC = () => {
   const themePresets = [
     {
       id: 'prime-crimson',
-      name: 'قرمزي برايم واش الرياضي (Signature Crimson)',
+      name: 'أحمر برايم واش (Prime Crimson)',
       primary: '#bd0000',
       secondary: '#570505',
       accent: '#bd0000',
@@ -204,8 +207,8 @@ export const PosAppearanceTab: React.FC = () => {
       badgeBg: 'from-red-600 to-rose-900',
     },
     {
-      id: 'cyber-neon',
-      name: 'نيون سايبر (Cyber Neon)',
+      id: 'cyber-cyan',
+      name: 'أزرق نيون (Cyber Cyan)',
       primary: '#06b6d4',
       secondary: '#3b82f6',
       accent: '#10b981',
@@ -215,10 +218,9 @@ export const PosAppearanceTab: React.FC = () => {
       headerBg: 'rgba(15, 23, 42, 0.85)',
       badgeBg: 'from-cyan-500 to-blue-600',
     },
-
     {
       id: 'royal-gold',
-      name: 'ملكي كلاسيكي ذهبي (Royal Gold)',
+      name: 'الذهبي الملكي (Royal Gold)',
       primary: '#f59e0b',
       secondary: '#d97706',
       accent: '#10b981',
@@ -229,8 +231,8 @@ export const PosAppearanceTab: React.FC = () => {
       badgeBg: 'from-amber-500 to-yellow-600',
     },
     {
-      id: 'midnight-violet',
-      name: 'ليلي بنفسجي (Midnight Violet)',
+      id: 'deep-violet',
+      name: 'بنفسجي داكن (Deep Violet)',
       primary: '#8b5cf6',
       secondary: '#6366f1',
       accent: '#ec4899',
@@ -241,8 +243,8 @@ export const PosAppearanceTab: React.FC = () => {
       badgeBg: 'from-purple-500 to-indigo-600',
     },
     {
-      id: 'titanium-slate',
-      name: 'تيتانيوم داكن فاخر (Titanium Slate)',
+      id: 'titanium-gray',
+      name: 'رمادي ميتاليك (Titanium Gray)',
       primary: '#38bdf8',
       secondary: '#64748b',
       accent: '#34d399',
@@ -271,8 +273,8 @@ export const PosAppearanceTab: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <RefreshCw className="w-8 h-8 text-brand-400 animate-spin" />
+      <div className="space-y-6">
+        <FormSkeleton fields={6} />
       </div>
     );
   }
@@ -282,8 +284,7 @@ export const PosAppearanceTab: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <Palette className="w-5 h-5 text-brand-400" />
+          <h2 className="text-xl font-black text-white">
             تخصيص ألوان ومظهر وخلفية النظام الشاملة
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -291,13 +292,22 @@ export const PosAppearanceTab: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={fetchSettings}
-          className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-xl text-xs flex items-center gap-1.5 self-start sm:self-auto"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>تحديث</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={handleResetToDefault}
+            className="px-3.5 py-2 bg-rose-950/40 hover:bg-rose-900/50 border border-rose-800/60 text-rose-300 hover:text-rose-100 rounded-xl text-xs font-bold transition-all"
+          >
+            استعادة السمة الافتراضية
+          </button>
+          <button
+            type="button"
+            onClick={fetchSettings}
+            className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-xl text-xs font-bold transition-all"
+          >
+            تحديث
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -316,18 +326,16 @@ export const PosAppearanceTab: React.FC = () => {
             {/* ======================================================== */}
             <div className="space-y-4">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
-                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                  <Pipette className="w-4 h-4 text-brand-400" />
-                  <span>1. تخصيص لوحة الألوان والسمات (Theme & Color Customizer)</span>
+                <label className="text-xs font-bold text-slate-200">
+                  1. تخصيص لوحة الألوان والسمات (Theme & Color Customizer)
                 </label>
                 <span className="text-[10px] text-slate-400">تطبيق حي ولحظي على النظام</span>
               </div>
 
               {/* Quick Themes Preset Buttons */}
               <div className="space-y-2">
-                <span className="text-xs font-semibold text-slate-400 flex items-center gap-1">
-                  <Palette className="w-3.5 h-3.5 text-brand-400" />
-                  <span>سمات وألوان جاهزة بضغطة زر:</span>
+                <span className="text-xs font-semibold text-slate-400">
+                  سمات وألوان جاهزة بضغطة زر:
                 </span>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   {themePresets.map((preset) => {
@@ -349,8 +357,8 @@ export const PosAppearanceTab: React.FC = () => {
                         }}
                       >
                         <div className="flex items-center gap-2.5">
-                          <div className={`w-6 h-6 rounded-lg bg-gradient-to-tr ${preset.badgeBg} flex items-center justify-center text-white shadow-md`}>
-                            {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                          <div className={`w-6 h-6 rounded-lg bg-gradient-to-tr ${preset.badgeBg} flex items-center justify-center text-white text-[10px] font-bold shadow-md`}>
+                            {isSelected ? '✓' : ''}
                           </div>
                           <div>
                             <div className="text-xs font-bold text-white">{preset.name}</div>
@@ -392,13 +400,13 @@ export const PosAppearanceTab: React.FC = () => {
                     <div className="flex items-center gap-2 pt-1">
                       <input
                         type="color"
-                        value={form.primary_color || '#06b6d4'}
+                        value={form.primary_color || '#bd0000'}
                         onChange={(e) => handleFieldChange('primary_color', e.target.value)}
                         className="w-9 h-9 rounded-xl cursor-pointer bg-transparent border border-slate-700 shrink-0"
                       />
                       <input
                         type="text"
-                        value={form.primary_color || '#06b6d4'}
+                        value={form.primary_color || '#bd0000'}
                         onChange={(e) => handleFieldChange('primary_color', e.target.value)}
                         className="w-full bg-slate-900/80 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-mono text-slate-100 focus:outline-none"
                       />
@@ -422,13 +430,13 @@ export const PosAppearanceTab: React.FC = () => {
                     <div className="flex items-center gap-2 pt-1">
                       <input
                         type="color"
-                        value={form.secondary_color || '#3b82f6'}
+                        value={form.secondary_color || '#570505'}
                         onChange={(e) => handleFieldChange('secondary_color', e.target.value)}
                         className="w-9 h-9 rounded-xl cursor-pointer bg-transparent border border-slate-700 shrink-0"
                       />
                       <input
                         type="text"
-                        value={form.secondary_color || '#3b82f6'}
+                        value={form.secondary_color || '#570505'}
                         onChange={(e) => handleFieldChange('secondary_color', e.target.value)}
                         className="w-full bg-slate-900/80 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-mono text-slate-100 focus:outline-none"
                       />
@@ -452,13 +460,13 @@ export const PosAppearanceTab: React.FC = () => {
                     <div className="flex items-center gap-2 pt-1">
                       <input
                         type="color"
-                        value={form.accent_color || '#10b981'}
+                        value={form.accent_color || '#bd0000'}
                         onChange={(e) => handleFieldChange('accent_color', e.target.value)}
                         className="w-9 h-9 rounded-xl cursor-pointer bg-transparent border border-slate-700 shrink-0"
                       />
                       <input
                         type="text"
-                        value={form.accent_color || '#10b981'}
+                        value={form.accent_color || '#bd0000'}
                         onChange={(e) => handleFieldChange('accent_color', e.target.value)}
                         className="w-full bg-slate-900/80 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-mono text-slate-100 focus:outline-none"
                       />
@@ -489,13 +497,13 @@ export const PosAppearanceTab: React.FC = () => {
                     <div className="flex items-center gap-2.5 pt-1">
                       <input
                         type="color"
-                        value={form.app_bg_color || '#090d16'}
+                        value={form.app_bg_color || '#000000'}
                         onChange={(e) => handleFieldChange('app_bg_color', e.target.value)}
                         className="w-9 h-9 rounded-xl cursor-pointer bg-transparent border border-slate-700 shrink-0"
                       />
                       <input
                         type="text"
-                        value={form.app_bg_color || '#090d16'}
+                        value={form.app_bg_color || '#000000'}
                         onChange={(e) => handleFieldChange('app_bg_color', e.target.value)}
                         className="w-full bg-slate-900/80 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs font-mono text-slate-100 focus:outline-none"
                       />
@@ -642,9 +650,8 @@ export const PosAppearanceTab: React.FC = () => {
             {/* ======================================================== */}
             <div className="space-y-4 pt-2 border-t border-slate-800/80">
               <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
-                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                  <Monitor className="w-4 h-4 text-brand-400" />
-                  <span>2. وسائط وخلفية شاشة الكاشير (Direct Upload & Media)</span>
+                <label className="text-xs font-bold text-slate-200">
+                  2. وسائط وخلفية شاشة الكاشير (Direct Upload & Media)
                 </label>
                 <span className="text-[10px] text-slate-400">يدعم الفيديو MP4 والصور بدقة عالية</span>
               </div>
@@ -665,8 +672,7 @@ export const PosAppearanceTab: React.FC = () => {
                     color: form.pos_background_type === 'none' ? '#ffffff' : 'rgb(148, 163, 184)',
                   }}
                 >
-                  <Layers className="w-5 h-5 mb-1 text-slate-400" />
-                  <span>بدون (شبكة داكنة)</span>
+                  بدون (شبكة داكنة)
                 </button>
 
                 <button
@@ -683,8 +689,7 @@ export const PosAppearanceTab: React.FC = () => {
                     color: form.pos_background_type === 'image' ? '#ffffff' : 'rgb(148, 163, 184)',
                   }}
                 >
-                  <ImageIcon className="w-5 h-5 mb-1" />
-                  <span>صورة عالية الدقة</span>
+                  صورة عالية الدقة
                 </button>
 
                 <button
@@ -701,8 +706,7 @@ export const PosAppearanceTab: React.FC = () => {
                     color: form.pos_background_type === 'video' ? '#ffffff' : 'rgb(148, 163, 184)',
                   }}
                 >
-                  <Film className="w-5 h-5 mb-1" />
-                  <span>فيديو تفاعلي Loop</span>
+                  فيديو تفاعلي Loop
                 </button>
               </div>
 
@@ -733,7 +737,7 @@ export const PosAppearanceTab: React.FC = () => {
                   >
                     {uploading ? (
                       <div className="flex flex-col items-center gap-2 py-3">
-                        <Loader2 className="w-8 h-8 text-brand-400 animate-spin" />
+                        <span className="w-8 h-8 rounded-full border-4 border-primary border-t-transparent animate-spin inline-block" />
                         <span className="text-xs font-bold text-slate-200">
                           جاري رفع وتجهيز الملف إلى الخادم / السحابة...
                         </span>
@@ -741,9 +745,6 @@ export const PosAppearanceTab: React.FC = () => {
                       </div>
                     ) : (
                       <>
-                        <div className="w-12 h-12 rounded-2xl bg-brand-500/15 text-brand-400 flex items-center justify-center mb-2.5 group-hover:scale-110 transition-transform">
-                          <UploadCloud className="w-6 h-6" />
-                        </div>
                         <h4 className="text-xs font-bold text-slate-200 mb-1">
                           اضغط لاختيار فيديو أو صورة من جهازك، أو اسحب الملف وأفلته هنا
                         </h4>
@@ -759,14 +760,12 @@ export const PosAppearanceTab: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setShowManualUrl(!showManualUrl)}
-                      className="text-brand-400 hover:underline flex items-center gap-1 font-bold"
+                      className="text-brand-400 hover:underline font-bold"
                     >
-                      <Link2 className="w-3.5 h-3.5" />
-                      <span>{showManualUrl ? 'إخفاء حقل الرابط الخارجي' : 'أو إدخال رابط وسائط خارجي يدوياً'}</span>
+                      {showManualUrl ? 'إخفاء حقل الرابط الخارجي' : 'أو إدخال رابط وسائط خارجي يدوياً'}
                     </button>
                     {form.pos_background_url && (
-                      <span className="text-[10px] text-emerald-400 font-mono flex items-center gap-1">
-                        <Check className="w-3 h-3" />
+                      <span className="text-[10px] text-emerald-400 font-mono">
                         تم تعيين الوسائط بنجاح
                       </span>
                     )}
@@ -794,9 +793,8 @@ export const PosAppearanceTab: React.FC = () => {
               {/* Opacity Slider */}
               <div className="space-y-3 pt-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                    <Sliders className="w-4 h-4 text-brand-400" />
-                    <span>درجة وضوح خلفية الشاشة / التعتيم (Background Visibility)</span>
+                  <label className="text-xs font-bold text-slate-200">
+                    درجة وضوح خلفية الشاشة / التعتيم (Background Visibility)
                   </label>
                   <span className="font-mono text-xs font-black text-brand-400 bg-brand-500/10 px-2.5 py-1 rounded-lg border border-brand-500/20">
                     {Math.round((form.pos_background_opacity || 0.25) * 100)}% وضوح
@@ -818,19 +816,25 @@ export const PosAppearanceTab: React.FC = () => {
 
             </div>
 
-            {/* Save Button */}
-            <div className="pt-3 border-t border-slate-800/80 flex justify-end">
+            {/* Save & Reset Buttons */}
+            <div className="pt-4 border-t border-slate-800/80 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={handleResetToDefault}
+                className="px-4 py-3 bg-slate-900/80 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white rounded-2xl text-xs font-bold transition-all order-2 sm:order-1 text-center"
+              >
+                استعادة سمة برايم واش الافتراضية
+              </button>
               <button
                 type="submit"
                 disabled={saving || uploading}
-                className="px-6 py-3.5 text-white rounded-2xl text-xs font-bold shadow-lg disabled:opacity-50 flex items-center gap-2 transition-all active:scale-[0.99]"
+                className="px-6 py-3.5 text-white rounded-2xl text-xs font-bold shadow-lg disabled:opacity-50 transition-all active:scale-[0.99] order-1 sm:order-2 text-center"
                 style={{
                   backgroundColor: 'var(--color-primary)',
                   boxShadow: '0 4px 14px rgba(0, 0, 0, 0.35)',
                 }}
               >
-                <CheckCircle2 className="w-4 h-4" />
-                <span>{saving ? 'جاري الحفظ والتطبيق...' : 'حفظ وتطبيق مظهر وألوان النظام'}</span>
+                {saving ? 'جاري الحفظ والتطبيق...' : 'حفظ وتطبيق مظهر وألوان النظام'}
               </button>
             </div>
           </form>
@@ -838,16 +842,15 @@ export const PosAppearanceTab: React.FC = () => {
 
         {/* Right Column: Live Interactive Simulation (5 cols) */}
         <div className="lg:col-span-5 space-y-3">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-slate-300">
-            <Eye className="w-4 h-4 text-brand-400" />
-            <span>معاينة حية فورية لشاشة الكاشير (POS Live Simulation):</span>
+          <div className="text-xs font-bold text-slate-300">
+            معاينة حية فورية لشاشة الكاشير (POS Live Simulation):
           </div>
 
           <div
             className="relative h-[580px] w-full rounded-3xl overflow-hidden border shadow-2xl flex flex-col justify-between p-4 select-none transition-all duration-300"
             style={{
-              borderColor: form.border_color || 'rgba(51, 65, 85, 0.6)',
-              backgroundColor: form.app_bg_color || '#090d16',
+              borderColor: form.border_color || 'rgba(194, 0, 0, 0.70)',
+              backgroundColor: form.app_bg_color || '#000000',
             }}
           >
             {/* Background Layer */}
@@ -859,7 +862,7 @@ export const PosAppearanceTab: React.FC = () => {
                 muted
                 playsInline
                 className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                style={{ opacity: form.pos_background_opacity ?? 0.25 }}
+                style={{ opacity: form.pos_background_opacity ?? 0.30 }}
               >
                 <source src={resolveMediaUrl(form.pos_background_url)} type="video/mp4" />
                 <source src={resolveMediaUrl(form.pos_background_url)} type="video/webm" />
@@ -870,7 +873,7 @@ export const PosAppearanceTab: React.FC = () => {
                 src={resolveMediaUrl(form.pos_background_url)}
                 alt="POS Background"
                 className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-                style={{ opacity: form.pos_background_opacity ?? 0.25 }}
+                style={{ opacity: form.pos_background_opacity ?? 0.30 }}
               />
             ) : (
               <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-40" />
@@ -883,15 +886,15 @@ export const PosAppearanceTab: React.FC = () => {
             <div
               className="relative z-10 flex items-center justify-between p-3 rounded-2xl backdrop-blur-md border transition-all duration-300"
               style={{
-                backgroundColor: form.header_bg_color || 'rgba(15, 23, 42, 0.85)',
-                borderColor: form.border_color || 'rgba(51, 65, 85, 0.6)',
+                backgroundColor: form.header_bg_color || 'rgba(46, 0, 0, 0.85)',
+                borderColor: form.border_color || 'rgba(194, 0, 0, 0.70)',
               }}
             >
               <div className="flex items-center gap-2">
                 <div
                   className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-[11px] font-black shadow-md"
                   style={{
-                    background: `linear-gradient(135deg, ${form.primary_color || '#06b6d4'}, ${form.secondary_color || '#3b82f6'})`,
+                    background: `linear-gradient(135deg, ${form.primary_color || '#bd0000'}, ${form.secondary_color || '#570505'})`,
                   }}
                 >
                   CW
@@ -901,12 +904,12 @@ export const PosAppearanceTab: React.FC = () => {
               <span
                 className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-md border"
                 style={{
-                  color: form.accent_color || '#10b981',
-                  borderColor: form.accent_color || '#10b981',
+                  color: form.accent_color || '#bd0000',
+                  borderColor: form.accent_color || '#bd0000',
                   backgroundColor: 'rgba(255, 255, 255, 0.05)',
                 }}
               >
-                🟢 متصل
+                متصل
               </span>
             </div>
 
@@ -915,14 +918,14 @@ export const PosAppearanceTab: React.FC = () => {
               <div
                 className="p-3.5 rounded-2xl backdrop-blur-md border shadow-lg transition-all duration-300 ring-2"
                 style={{
-                  backgroundColor: form.card_bg_color || 'rgba(15, 23, 42, 0.75)',
-                  borderColor: form.primary_color || '#06b6d4',
+                  backgroundColor: form.card_bg_color || 'rgba(66, 0, 0, 0.82)',
+                  borderColor: form.primary_color || '#bd0000',
                   boxShadow: `0 0 20px rgba(0, 0, 0, 0.35)`,
                 }}
               >
                 <div
                   className="text-[11px] font-bold mb-1"
-                  style={{ color: form.primary_color || '#06b6d4' }}
+                  style={{ color: form.primary_color || '#bd0000' }}
                 >
                   غسيل شامل VIP
                 </div>
@@ -932,8 +935,8 @@ export const PosAppearanceTab: React.FC = () => {
               <div
                 className="p-3.5 rounded-2xl backdrop-blur-md border transition-all duration-300"
                 style={{
-                  backgroundColor: form.card_bg_color || 'rgba(15, 23, 42, 0.75)',
-                  borderColor: form.border_color || 'rgba(51, 65, 85, 0.6)',
+                  backgroundColor: form.card_bg_color || 'rgba(66, 0, 0, 0.82)',
+                  borderColor: form.border_color || 'rgba(194, 0, 0, 0.70)',
                 }}
               >
                 <div className="text-[11px] text-slate-300 font-bold mb-1">غسيل خارجي رغوة</div>
@@ -943,8 +946,8 @@ export const PosAppearanceTab: React.FC = () => {
               <div
                 className="p-3.5 rounded-2xl backdrop-blur-md border transition-all duration-300"
                 style={{
-                  backgroundColor: form.card_bg_color || 'rgba(15, 23, 42, 0.75)',
-                  borderColor: form.border_color || 'rgba(51, 65, 85, 0.6)',
+                  backgroundColor: form.card_bg_color || 'rgba(66, 0, 0, 0.82)',
+                  borderColor: form.border_color || 'rgba(194, 0, 0, 0.70)',
                 }}
               >
                 <div className="text-[11px] text-slate-300 font-bold mb-1">تلميع صالون وواكس</div>
@@ -954,8 +957,8 @@ export const PosAppearanceTab: React.FC = () => {
               <div
                 className="p-3.5 rounded-2xl backdrop-blur-md border transition-all duration-300"
                 style={{
-                  backgroundColor: form.card_bg_color || 'rgba(15, 23, 42, 0.75)',
-                  borderColor: form.border_color || 'rgba(51, 65, 85, 0.6)',
+                  backgroundColor: form.card_bg_color || 'rgba(66, 0, 0, 0.82)',
+                  borderColor: form.border_color || 'rgba(194, 0, 0, 0.70)',
                 }}
               >
                 <div className="text-[11px] text-slate-300 font-bold mb-1">غسيل محرك بالبخار</div>
@@ -967,14 +970,14 @@ export const PosAppearanceTab: React.FC = () => {
             <div
               className="relative z-10 p-3 rounded-2xl backdrop-blur-md border flex items-center justify-between transition-all duration-300"
               style={{
-                backgroundColor: form.card_bg_color || 'rgba(15, 23, 42, 0.75)',
-                borderColor: form.border_color || 'rgba(51, 65, 85, 0.6)',
+                backgroundColor: form.card_bg_color || 'rgba(66, 0, 0, 0.82)',
+                borderColor: form.border_color || 'rgba(194, 0, 0, 0.70)',
               }}
             >
               <span className="text-[11px] text-slate-300">إجمالي الطلب:</span>
               <span
                 className="font-mono text-sm font-black"
-                style={{ color: form.primary_color || '#06b6d4' }}
+                style={{ color: form.primary_color || '#bd0000' }}
               >
                 150.00 ج.م
               </span>
@@ -982,7 +985,7 @@ export const PosAppearanceTab: React.FC = () => {
                 type="button"
                 className="px-3.5 py-1.5 text-white rounded-xl text-[11px] font-bold shadow-md transition-all"
                 style={{
-                  backgroundColor: form.primary_color || '#06b6d4',
+                  backgroundColor: form.primary_color || '#bd0000',
                   boxShadow: '0 4px 14px rgba(0, 0, 0, 0.35)',
                 }}
               >

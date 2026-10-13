@@ -1,10 +1,73 @@
+# ----------------------------------------------------
+# AI Tooling, Prompts, Scratch & Agent Brain Artifacts
+# ----------------------------------------------------
+.gemini/
+.cursor/
+.claude/
+.windsurf/
+brain/
+scratch/
+walkthrough.md
+implementation_plan.md
+latency_*.md
+input_and_pointer_*.md
+*_summary.md
+*_plan.md
+*_report.md
+*.tmp
+*.scratch
+
+# ----------------------------------------------------
+# Dependencies & Package Managers
+# ----------------------------------------------------
 node_modules/
+client/node_modules/
+.pnpm-store/
+
+# ----------------------------------------------------
+# Production Builds, Caches & Generated Bundles
+# ----------------------------------------------------
 dist/
 client/dist/
-client/node_modules/
+.cache/
+.parcel-cache/
+.wrangler/
+.turbo/
+
+# ----------------------------------------------------
+# Environment Variables & Secrets (Critical Security)
+# ----------------------------------------------------
 .env
 .env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# ----------------------------------------------------
+# Local Scratch & One-off Verification Scripts
+# ----------------------------------------------------
+test-attendance-split-brain.ts
+test-vat-export.ts
+test-edge-cases.ts
+test-performance-thermal.ts
+
+# ----------------------------------------------------
+# Logs & Diagnostic Outputs
+# ----------------------------------------------------
 *.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+vite.log
+
+# ----------------------------------------------------
+# OS & Editor Metadata
+# ----------------------------------------------------
 .DS_Store
-.wrangler/
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
 uploads/

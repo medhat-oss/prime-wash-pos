@@ -1,68 +1,73 @@
-import React, { useState, Suspense, lazy } from 'react';
-import {
-  LayoutDashboard,
-  Package,
-  Layers,
-  Users,
-  Clock,
-  FileText,
-  TrendingUp,
-  ShieldCheck,
-  Palette,
-  ChevronDown,
-  Loader2,
-} from 'lucide-react';
+import React, { useState, Component, ErrorInfo, ReactNode } from 'react';
+import { OverviewTab } from './OverviewTab.js';
+import { InventoryTab } from './InventoryTab.js';
+import { ServicesBomTab } from './ServicesBomTab.js';
+import { PosAppearanceTab } from './PosAppearanceTab.js';
+import { HrPayrollTab } from './HrPayrollTab.js';
+import { ActiveShiftTab } from './ActiveShiftTab.js';
+import { LandingSettingsTab } from './LandingSettingsTab.js';
+import { OrdersHistoryTab } from './OrdersHistoryTab.js';
+import { ExpensesTab } from './ExpensesTab.js';
+import { EtaSettingsTab } from './EtaSettingsTab.js';
 
-// Lazy-loaded Admin Sub-Tabs for optimal code-splitting and faster initial loading
-const OverviewTab = lazy(() => import('./OverviewTab.js'));
-const InventoryTab = lazy(() => import('./InventoryTab.js'));
-const ServicesBomTab = lazy(() => import('./ServicesBomTab.js'));
-const PosAppearanceTab = lazy(() => import('./PosAppearanceTab.js'));
-const HrPayrollTab = lazy(() => import('./HrPayrollTab.js'));
-const ActiveShiftTab = lazy(() => import('./ActiveShiftTab.js'));
-const OrdersHistoryTab = lazy(() => import('./OrdersHistoryTab.js'));
-const ExpensesTab = lazy(() => import('./ExpensesTab.js'));
-const EtaSettingsTab = lazy(() => import('./EtaSettingsTab.js'));
+interface ErrorBoundaryProps {
+  children: ReactNode;
+  tabName?: string;
+}
 
-/**
- * High-fidelity Tab Loading Skeleton with Dark Crimson aesthetic
- */
-const TabLoadingSkeleton: React.FC = () => (
-  <div className="space-y-6 animate-pulse p-4 rounded-3xl border border-white/10 bg-slate-900/40 backdrop-blur-md">
-    <div className="flex items-center justify-between">
-      <div className="space-y-2">
-        <div className="h-6 w-48 rounded-xl bg-white/10" />
-        <div className="h-3 w-72 rounded-lg bg-white/5" />
-      </div>
-      <div className="h-9 w-32 rounded-xl bg-white/10" />
-    </div>
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="h-28 rounded-2xl bg-white/5 border border-white/5" />
-      ))}
-    </div>
-    <div className="h-64 rounded-3xl bg-white/5 border border-white/5 flex items-center justify-center">
-      <div className="flex items-center gap-2 text-xs font-bold text-slate-400">
-        <Loader2 className="w-5 h-5 animate-spin text-rose-500" />
-        <span>جاري تحميل التبويب...</span>
-      </div>
-    </div>
-  </div>
-);
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class TabErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('Tab render error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="p-6 rounded-3xl border border-rose-500/30 bg-rose-950/20 backdrop-blur-md text-center space-y-4 my-4">
+          <div className="text-3xl">⚠️</div>
+          <h3 className="text-sm font-bold text-rose-300">حدث خطأ أثناء عرض هذا التبويب</h3>
+          <p className="text-xs text-slate-400">{this.state.error?.message || 'تعذر تحميل محتوى التبويب'}</p>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-md"
+          >
+            إعادة المحاولة
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export const AdminDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('overview');
 
   const tabs = [
-    { id: 'overview', label: 'نظرة عامة', icon: <LayoutDashboard className="w-4 h-4 shrink-0" /> },
-    { id: 'inventory', label: 'المخزون بالجرام (BOM)', icon: <Package className="w-4 h-4 shrink-0" /> },
-    { id: 'services', label: 'الخدمات والوصفات', icon: <Layers className="w-4 h-4 shrink-0" /> },
-    { id: 'pos_appearance', label: 'مظهر وخلفية الكاشير', icon: <Palette className="w-4 h-4 shrink-0" /> },
-    { id: 'hr', label: 'الموظفين والرواتب', icon: <Users className="w-4 h-4 shrink-0" /> },
-    { id: 'active_shift', label: 'وردية الكاشير الحالية', icon: <Clock className="w-4 h-4 shrink-0" /> },
-    { id: 'orders', label: 'سجل الفواتير', icon: <FileText className="w-4 h-4 shrink-0" /> },
-    { id: 'expenses', label: 'المصروفات والأرباح (P&L)', icon: <TrendingUp className="w-4 h-4 shrink-0" /> },
-    { id: 'eta', label: 'الربط والامتثال الضريبي (ETA)', icon: <ShieldCheck className="w-4 h-4 shrink-0" /> },
+    { id: 'overview', label: 'نظرة عامة' },
+    { id: 'inventory', label: 'المخزون بالجرام (BOM)' },
+    { id: 'services', label: 'الخدمات والوصفات' },
+    { id: 'pos_appearance', label: 'مظهر وخلفية الكاشير' },
+    { id: 'hr', label: 'الموظفين والرواتب' },
+    { id: 'active_shift', label: 'ورديات الكاشير' },
+    { id: 'landing_cms', label: 'صفحة العروض والزوار' },
+    { id: 'orders', label: 'سجل الفواتير' },
+    { id: 'expenses', label: 'المصروفات والأرباح (P&L)' },
+    { id: 'eta', label: 'الربط والامتثال الضريبي (ETA)' },
   ];
 
   return (
@@ -85,7 +90,6 @@ export const AdminDashboard: React.FC = () => {
               </option>
             ))}
           </select>
-          <ChevronDown className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5 pointer-events-none" />
         </div>
       </div>
 
@@ -101,7 +105,7 @@ export const AdminDashboard: React.FC = () => {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-bold whitespace-nowrap transition-all border shrink-0 backdrop-blur-md active:scale-95 ${
+            className={`flex items-center justify-center px-4 py-2.5 rounded-2xl text-xs font-bold whitespace-nowrap transition-all border shrink-0 backdrop-blur-md active:scale-95 ${
               activeTab === tab.id
                 ? 'text-white shadow-lg'
                 : 'text-slate-400 hover:text-slate-200'
@@ -119,15 +123,14 @@ export const AdminDashboard: React.FC = () => {
                   }
             }
           >
-            {tab.icon}
             <span>{tab.label}</span>
           </button>
         ))}
       </div>
 
-      {/* Active Tab Content View wrapped with Suspense */}
+      {/* Active Tab Content View wrapped with TabErrorBoundary */}
       <div className="animate-in fade-in duration-200">
-        <Suspense fallback={<TabLoadingSkeleton />}>
+        <TabErrorBoundary tabName={activeTab}>
           {activeTab === 'overview' && (
             <OverviewTab onNavigateTab={(targetTab) => setActiveTab(targetTab)} />
           )}
@@ -136,10 +139,11 @@ export const AdminDashboard: React.FC = () => {
           {activeTab === 'pos_appearance' && <PosAppearanceTab />}
           {activeTab === 'hr' && <HrPayrollTab />}
           {activeTab === 'active_shift' && <ActiveShiftTab />}
+          {activeTab === 'landing_cms' && <LandingSettingsTab />}
           {activeTab === 'orders' && <OrdersHistoryTab />}
           {activeTab === 'expenses' && <ExpensesTab />}
           {activeTab === 'eta' && <EtaSettingsTab />}
-        </Suspense>
+        </TabErrorBoundary>
       </div>
     </div>
   );

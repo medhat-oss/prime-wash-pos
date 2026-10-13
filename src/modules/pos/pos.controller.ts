@@ -78,4 +78,74 @@ export class PosController {
       next(error);
     }
   }
+
+  // ==========================================
+  // Shift Operations Handlers
+  // ==========================================
+  static async getActiveShift(req: Request, res: Response, next: NextFunction) {
+    try {
+      const session = await PosService.getActiveShift();
+      res.json({
+        success: true,
+        data: session,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async startActiveShift(req: Request, res: Response, next: NextFunction) {
+    try {
+      const session = await PosService.startActiveShift(req.body);
+      res.json({
+        success: true,
+        message: 'تم فتح الشفت مركزياً بنجاح',
+        data: session,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async closeActiveShift(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await PosService.closeActiveShift(req.body);
+      res.json({
+        success: true,
+        message: result.message,
+        data: req.body,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async getClosedShifts(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { startDate, endDate, cashierId, search } = req.query;
+      const shifts = await PosService.getClosedShifts({
+        startDate: startDate as string,
+        endDate: endDate as string,
+        cashierId: cashierId as string,
+        search: search as string,
+      });
+      res.json({
+        success: true,
+        count: shifts.length,
+        data: shifts,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  static async deleteClosedShift(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = req.params.id as string;
+      const result = await PosService.deleteClosedShift(id);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
 }

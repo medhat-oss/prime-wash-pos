@@ -1,23 +1,8 @@
-import React, { useState } from 'react';
-import {
-  User,
-  Phone,
-  Banknote,
-  CreditCard,
-  Smartphone,
-  CheckCircle2,
-  Loader2,
-  AlertCircle,
-  Receipt,
-  UserCheck,
-  ChevronDown,
-  ChevronUp,
-  FileText,
-} from 'lucide-react';
-import { Service, Employee } from '../../types/index.js';
+import React, { useState, useEffect } from 'react';
+import { Service, Employee, TaxSettings } from '../../types/index.js';
 import { formatEGP, calculateTaxBreakdown } from '../../utils/formatters.js';
 import { EmptyState } from '../../components/ui/EmptyState.js';
-
+import { getStoredTaxSettings, TAX_SETTINGS_UPDATED_EVENT } from '../../utils/taxStorage.js';
 
 interface OrderSummaryProps {
   selectedService: Service | null;
@@ -30,7 +15,6 @@ interface OrderSummaryProps {
   setAssignedEmployeeId: (val: string) => void;
   paymentMethod: 'cash' | 'card' | 'transfer';
   setPaymentMethod: (val: 'cash' | 'card' | 'transfer') => void;
-
   notes: string;
   setNotes: (val: string) => void;
   onSubmit: () => void;
@@ -54,13 +38,33 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
   isSubmitting,
 }) => {
   const [showExtraDetails, setShowExtraDetails] = useState(false);
+  const [taxSettings, setTaxSettings] = useState<TaxSettings>(() => getStoredTaxSettings());
+
+  useEffect(() => {
+    const handleTaxUpdate = (e: any) => {
+      if (e.detail) {
+        setTaxSettings(e.detail);
+      } else {
+        setTaxSettings(getStoredTaxSettings());
+      }
+    };
+    window.addEventListener(TAX_SETTINGS_UPDATED_EVENT, handleTaxUpdate);
+    return () => {
+      window.removeEventListener(TAX_SETTINGS_UPDATED_EVENT, handleTaxUpdate);
+    };
+  }, []);
 
   const totalPrice = selectedService ? Number(selectedService.price) : 0;
-  const { subtotal, taxAmount } = calculateTaxBreakdown(totalPrice);
+  const { subtotal, taxAmount } = React.useMemo(() => {
+    if (!taxSettings.is_enabled) {
+      return { subtotal: totalPrice, taxAmount: 0 };
+    }
+    return calculateTaxBreakdown(totalPrice);
+  }, [totalPrice, taxSettings.is_enabled]);
 
   return (
     <div
-      className="border rounded-3xl p-5 sm:p-6 shadow-2xl flex flex-col justify-between h-full space-y-5 backdrop-blur-md transition-all duration-300"
+      className="border rounded-3xl p-5 sm:p-6 shadow-2xl flex flex-col justify-between h-full space-y-5 transition-all duration-300"
       style={{
         backgroundColor: 'var(--card-bg)',
         borderColor: 'var(--border-color)',
@@ -72,9 +76,9 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
           <h3 className="font-black text-slate-100 text-base">تسجيل الفاتورة السريعة</h3>
           {selectedService && (
             <span
-              className="text-xs px-3 py-1 rounded-full font-bold border backdrop-blur-md transition-all duration-300"
+              className="text-xs px-3 py-1 rounded-full font-bold border transition-all duration-300"
               style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                backgroundColor: 'rgba(255, 255, 255, 0.08)',
                 color: 'var(--color-primary)',
                 borderColor: 'var(--color-primary)',
               }}
@@ -87,9 +91,8 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
 
         {/* 1. Assigned Worker / Staff Selection */}
         <div>
-          <label className="block text-xs font-bold text-slate-300 mb-1.5 flex items-center gap-1.5">
-            <UserCheck className="w-4 h-4" style={{ color: 'var(--color-primary)' }} />
-            <span>العامل المسؤول عن الغسلة</span>
+          <label className="block text-xs font-bold text-slate-300 mb-1.5">
+            العامل المسؤول عن الغسلة
           </label>
           <select
             value={assignedEmployeeId}
@@ -120,7 +123,7 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
             <button
               type="button"
               onClick={() => setPaymentMethod('cash')}
-              className={`flex flex-col items-center justify-center gap-1.5 py-3.5 px-2 rounded-2xl border text-xs font-black transition-all active:scale-95 ${
+              className={`flex flex-col items-center justify-center py-3.5 px-2 rounded-2xl border text-xs font-black transition-all active:scale-95 ${
                 paymentMethod === 'cash'
                   ? 'text-white shadow-lg ring-2 ring-white/20'
                   : 'text-slate-400 hover:text-slate-200'
@@ -131,14 +134,13 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
                 boxShadow: paymentMethod === 'cash' ? '0 6px 18px rgba(0, 0, 0, 0.35)' : 'none',
               }}
             >
-              <Banknote className="w-5 h-5" />
-              <span>كاش (نقدي)</span>
+              كاش (نقدي)
             </button>
 
             <button
               type="button"
               onClick={() => setPaymentMethod('card')}
-              className={`flex flex-col items-center justify-center gap-1.5 py-3.5 px-2 rounded-2xl border text-xs font-black transition-all active:scale-95 ${
+              className={`flex flex-col items-center justify-center py-3.5 px-2 rounded-2xl border text-xs font-black transition-all active:scale-95 ${
                 paymentMethod === 'card'
                   ? 'text-white shadow-lg ring-2 ring-white/20'
                   : 'text-slate-400 hover:text-slate-200'
@@ -149,14 +151,13 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
                 boxShadow: paymentMethod === 'card' ? '0 6px 18px rgba(0, 0, 0, 0.35)' : 'none',
               }}
             >
-              <CreditCard className="w-5 h-5" />
-              <span>فيزا / بطاقة</span>
+              فيزا / بطاقة
             </button>
 
             <button
               type="button"
               onClick={() => setPaymentMethod('transfer')}
-              className={`flex flex-col items-center justify-center gap-1.5 py-3.5 px-2 rounded-2xl border text-xs font-black transition-all active:scale-95 ${
+              className={`flex flex-col items-center justify-center py-3.5 px-2 rounded-2xl border text-xs font-black transition-all active:scale-95 ${
                 paymentMethod === 'transfer'
                   ? 'text-white shadow-lg ring-2 ring-white/20'
                   : 'text-slate-400 hover:text-slate-200'
@@ -167,8 +168,7 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
                 boxShadow: paymentMethod === 'transfer' ? '0 6px 18px rgba(0, 0, 0, 0.35)' : 'none',
               }}
             >
-              <Smartphone className="w-5 h-5" />
-              <span>محفظة إلكترونية</span>
+              محفظة إلكترونية
             </button>
           </div>
         </div>
@@ -181,7 +181,6 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
             className="w-full flex items-center justify-between py-2 text-xs font-bold text-slate-400 hover:text-slate-200 transition-colors border-t border-slate-800/80"
           >
             <span className="flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5" style={{ color: 'var(--color-primary)' }} />
               <span>بيانات العميل والملاحظات (اختياري)</span>
               {(customerName || customerPhone || notes) && (
                 <span
@@ -190,24 +189,21 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
                 />
               )}
             </span>
-            {showExtraDetails ? (
-              <ChevronUp className="w-4 h-4 text-slate-500" />
-            ) : (
-              <ChevronDown className="w-4 h-4 text-slate-500" />
-            )}
+            <span className="text-xs font-bold text-slate-400">
+              {showExtraDetails ? '▲' : '▼'}
+            </span>
           </button>
 
           {showExtraDetails && (
             <div className="space-y-3 pt-2 animate-in fade-in slide-in-from-top-1 duration-150">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div className="relative">
-                  <User className="w-4 h-4 text-slate-600 absolute right-3 top-2.5" />
+                <div>
                   <input
                     type="text"
                     placeholder="اسم العميل (اختياري)"
                     value={customerName}
                     onChange={(e) => setCustomerName(e.target.value)}
-                    className="w-full border focus:border-primary rounded-xl pr-9 pl-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none transition-colors"
+                    className="w-full border focus:border-primary rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none transition-colors"
                     style={{
                       backgroundColor: 'rgba(2, 6, 23, 0.65)',
                       borderColor: 'var(--border-color)',
@@ -215,14 +211,13 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
                   />
                 </div>
 
-                <div className="relative">
-                  <Phone className="w-4 h-4 text-slate-600 absolute right-3 top-2.5" />
+                <div>
                   <input
                     type="text"
                     placeholder="رقم الموبايل (اختياري)"
                     value={customerPhone}
                     onChange={(e) => setCustomerPhone(e.target.value)}
-                    className="w-full border focus:border-primary rounded-xl pr-9 pl-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none transition-colors font-mono"
+                    className="w-full border focus:border-primary rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none transition-colors font-mono"
                     style={{
                       backgroundColor: 'rgba(2, 6, 23, 0.65)',
                       borderColor: 'var(--border-color)',
@@ -231,14 +226,13 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
                 </div>
               </div>
 
-              <div className="relative">
-                <FileText className="w-4 h-4 text-slate-600 absolute right-3 top-2.5" />
+              <div>
                 <input
                   type="text"
                   placeholder="ملاحظات إضافية على الطلب..."
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  className="w-full border focus:border-primary rounded-xl pr-9 pl-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none transition-colors"
+                  className="w-full border focus:border-primary rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-600 focus:outline-none transition-colors"
                   style={{
                     backgroundColor: 'rgba(2, 6, 23, 0.65)',
                     borderColor: 'var(--border-color)',
@@ -261,14 +255,18 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
               </div>
               <div className="flex justify-between">
                 <span>ضريبة القيمة المضافة (14%):</span>
-                <span className="font-mono text-slate-200">{formatEGP(taxAmount)}</span>
+                {taxSettings.is_enabled ? (
+                  <span className="font-mono text-slate-200">{formatEGP(taxAmount)}</span>
+                ) : (
+                  <span className="text-[11px] font-bold text-slate-400">معفى من الضريبة (معطل)</span>
+                )}
               </div>
             </div>
 
             <div
-              className="flex items-baseline justify-between p-4 rounded-2xl border backdrop-blur-md transition-all duration-300"
+              className="flex items-baseline justify-between p-4 rounded-2xl border transition-all duration-300"
               style={{
-                backgroundColor: 'rgba(2, 6, 23, 0.65)',
+                backgroundColor: 'rgba(2, 6, 23, 0.75)',
                 borderColor: 'var(--border-color)',
               }}
             >
@@ -292,21 +290,17 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
             >
               {isSubmitting ? (
                 <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span className="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
                   <span>جاري تسجيل الطلب وخصم الجرامات...</span>
                 </>
               ) : (
-                <>
-                  <CheckCircle2 className="w-5 h-5" />
-                  <span>إصدار الفاتورة وطباعة الإيصال (Done)</span>
-                </>
+                <span>إصدار الفاتورة وطباعة الإيصال (Done)</span>
               )}
             </button>
           </>
         ) : (
           <EmptyState
             compact
-            icon={<Receipt className="w-5 h-5 opacity-70" />}
             title="لم يتم اختيار باقة غسيل"
             description="اضغط على باقة الغسيل من القائمة لبدء الفاتورة وتحديد طريقة الدفع"
           />
@@ -318,4 +312,4 @@ export const OrderSummary: React.FC<OrderSummaryProps> = ({
   );
 };
 
-export default OrderSummary;
+export default React.memo(OrderSummary);

@@ -1,26 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import {
-  FileText,
-  Search,
-  RefreshCw,
-  Printer,
-  Filter,
-  ExternalLink,
-  CheckCircle2,
-  AlertCircle,
-  Clock,
-  Send,
-  RotateCcw,
-  AlertTriangle,
-  Loader2,
-} from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { posApi, taxApi } from '../../api/client.js';
 import { Order } from '../../types/index.js';
 import { useToast } from '../../components/Toast.js';
 import ThermalReceipt from '../../components/ThermalReceipt.js';
 import Modal from '../../components/Modal.js';
 import { formatEGP, formatDateTime } from '../../utils/formatters.js';
-import { EmptyState } from '../../components/ui/EmptyState.js';
+import { EmptyState, TableSkeletonRows, ErrorState } from '../../components/ui/index.js';
 
 
 export const OrdersHistoryTab: React.FC = () => {
@@ -31,6 +16,8 @@ export const OrdersHistoryTab: React.FC = () => {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [selectedOrderToPrint, setSelectedOrderToPrint] = useState<Order | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 50;
 
   // Cancellation Modal State
   const [orderToCancel, setOrderToCancel] = useState<Order | null>(null);
@@ -92,19 +79,53 @@ export const OrdersHistoryTab: React.FC = () => {
   };
 
   useEffect(() => {
+    setCurrentPage(1);
+  }, [search, statusFilter]);
+
+  useEffect(() => {
     fetchOrders();
+
+    let debounceTimer: any = null;
+    const handleUpdates = () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        fetchOrders();
+      }, 400);
+    };
+
+    window.addEventListener('cw_orders_updated', handleUpdates);
+    window.addEventListener('cw_tax_settings_updated', handleUpdates);
+    window.addEventListener('cw_shifts_updated', handleUpdates);
+    window.addEventListener('storage', handleUpdates);
+
+    return () => {
+      clearTimeout(debounceTimer);
+      window.removeEventListener('cw_orders_updated', handleUpdates);
+      window.removeEventListener('cw_tax_settings_updated', handleUpdates);
+      window.removeEventListener('cw_shifts_updated', handleUpdates);
+      window.removeEventListener('storage', handleUpdates);
+    };
   }, [statusFilter]);
 
-  const filteredOrders = (orders || []).filter((o) => {
-    const s = search.toLowerCase();
-    return (
-      (o.order_code || '').toLowerCase().includes(s) ||
-      (o.customer_name && o.customer_name.toLowerCase().includes(s)) ||
-      (o.customer_phone && o.customer_phone.includes(s)) ||
-      (o.service_name && o.service_name.toLowerCase().includes(s)) ||
-      (o.eta_uuid && o.eta_uuid.toLowerCase().includes(s))
-    );
-  });
+  const filteredOrders = useMemo(() => {
+    const s = search.toLowerCase().trim();
+    if (!s) return orders || [];
+    return (orders || []).filter((o) => {
+      return (
+        (o.order_code || '').toLowerCase().includes(s) ||
+        (o.customer_name && o.customer_name.toLowerCase().includes(s)) ||
+        (o.customer_phone && o.customer_phone.includes(s)) ||
+        (o.service_name && o.service_name.toLowerCase().includes(s)) ||
+        (o.eta_uuid && o.eta_uuid.toLowerCase().includes(s))
+      );
+    });
+  }, [orders, search]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredOrders.length / PAGE_SIZE));
+  const paginatedOrders = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return filteredOrders.slice(start, start + PAGE_SIZE);
+  }, [filteredOrders, currentPage]);
 
 
   return (
@@ -128,8 +149,7 @@ export const OrdersHistoryTab: React.FC = () => {
           maxWidth="md"
         >
           <div className="space-y-4 text-xs">
-            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200 flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-200">
               <div className="space-y-1">
                 <div className="font-bold text-sm text-rose-300">تأكيد عملية الاسترجاع والإلغاء</div>
                 <p>
@@ -202,10 +222,8 @@ export const OrdersHistoryTab: React.FC = () => {
                 className="flex items-center justify-center gap-1.5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold shadow-lg shadow-rose-600/30 transition-all disabled:opacity-50"
               >
                 {isCancelling ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <RotateCcw className="w-4 h-4" />
-                )}
+                  <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
+                ) : null}
                 <span>تأكيد الإلغاء والاسترجاع</span>
               </button>
             </div>
@@ -216,9 +234,8 @@ export const OrdersHistoryTab: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <FileText className="w-5 h-5" style={{ color: 'var(--color-primary)' }} />
-            <span>سجل وأرشيف الفواتير والطلبات (Orders History)</span>
+          <h2 className="text-xl font-black text-white">
+            سجل وأرشيف الفاتورات والطلبات (Orders History)
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
             استعراض كافة عمليات الغسيل، متابعة حالة التوثيق الضريبي (ETA)، استرجاع وإلغاء الطلبات، وطباعة الإيصالات
@@ -227,14 +244,13 @@ export const OrdersHistoryTab: React.FC = () => {
 
         <button
           onClick={fetchOrders}
-          className="flex items-center gap-1.5 px-3.5 py-2 border text-slate-300 rounded-xl text-xs font-semibold backdrop-blur-md transition-all hover:bg-white/5"
+          className="px-3.5 py-2 border text-slate-300 rounded-xl text-xs font-semibold backdrop-blur-md transition-all hover:bg-white/5"
           style={{
             backgroundColor: 'var(--card-bg)',
             borderColor: 'var(--border-color)',
           }}
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} style={{ color: 'var(--color-primary)' }} />
-          <span>تحديث السجل</span>
+          {loading ? 'جاري التحميل...' : 'تحديث السجل'}
         </button>
       </div>
 
@@ -247,13 +263,12 @@ export const OrdersHistoryTab: React.FC = () => {
         }}
       >
         <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 text-slate-500 absolute right-3 top-3" />
           <input
             type="text"
             placeholder="بحث برقم الفاتورة، اسم العميل، رقم الهاتف، نوع الغسيل..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full border rounded-xl pr-9 pl-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none transition-colors"
+            className="w-full border rounded-xl px-3.5 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none transition-colors"
             style={{
               backgroundColor: 'rgba(0, 0, 0, 0.4)',
               borderColor: 'var(--border-color)',
@@ -262,7 +277,6 @@ export const OrdersHistoryTab: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <Filter className="w-3.5 h-3.5 text-slate-400" />
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -310,8 +324,10 @@ export const OrdersHistoryTab: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y" style={{ borderColor: 'var(--border-color)' }}>
-              {filteredOrders.length > 0 ? (
-                filteredOrders.map((order) => {
+              {loading ? (
+                <TableSkeletonRows columns={9} rows={8} />
+              ) : paginatedOrders.length > 0 ? (
+                paginatedOrders.map((order) => {
                   return (
                     <tr key={order.id} className="hover:bg-white/5 transition-colors">
                       <td className="py-3 px-4 font-mono font-bold" style={{ color: 'var(--color-primary)' }}>
@@ -344,39 +360,48 @@ export const OrdersHistoryTab: React.FC = () => {
                         {formatEGP(order.total_amount)}
                       </td>
 
-                      <td className="py-3 px-4 text-slate-400">
-                        {order.payment_method === 'cash'
-                          ? 'كاش'
-                          : order.payment_method === 'card'
-                          ? 'فيزا / بطاقة'
-                          : 'محفظة / تحويل'}
+                      <td className="py-3 px-4 text-slate-300">
+                        <span
+                          className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${
+                            order.payment_method === 'cash'
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                              : order.payment_method === 'card'
+                              ? 'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                              : 'bg-purple-500/20 text-purple-300 border-purple-500/30'
+                          }`}
+                        >
+                          {order.payment_method === 'cash'
+                            ? 'كاش (نقدي)'
+                            : order.payment_method === 'card'
+                            ? 'فيزا / بطاقة'
+                            : 'تحويل / محفظة'}
+                        </span>
                       </td>
 
                       <td className="py-3 px-4">
                         <span
-                          className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                          className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold border ${
                             order.status === 'completed'
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
                               : order.status === 'in_progress'
-                              ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30'
-                              : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                              : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
                           }`}
                         >
                           {order.status === 'completed'
-                            ? 'مكتمل'
+                            ? 'مكتملة'
                             : order.status === 'in_progress'
                             ? 'قيد الغسيل'
-                            : 'ملغي ومسترجع'}
+                            : 'ملغاة ومسترجعة'}
                         </span>
                       </td>
 
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          {order.eta_status === 'valid' ? (
+                          {order.eta_status === 'valid' || order.eta_status === 'submitted' || (order as any).is_synced || Boolean(order.eta_uuid) ? (
                             <>
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>معتمد</span>
+                              <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-sans">
+                                معتمدة بالضرائب
                               </span>
                               {order.eta_share_url && (
                                 <a
@@ -384,72 +409,21 @@ export const OrdersHistoryTab: React.FC = () => {
                                   target="_blank"
                                   rel="noreferrer"
                                   title="معاينة إيصال الضرائب الرسمي"
-                                  className="p-1 hover:text-emerald-400 text-slate-400"
+                                  className="px-2 py-0.5 text-[10px] font-bold border border-emerald-500/30 text-emerald-400 rounded hover:bg-emerald-500/10 font-sans"
                                 >
-                                  <ExternalLink className="w-3 h-3" />
+                                  عرض
                                 </a>
                               )}
                             </>
-                          ) : order.eta_status === 'pending' ? (
-                            <>
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                                <Clock className="w-3 h-3" />
-                                <span>قيد الإرسال</span>
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleSyncOrder(order.id)}
-                                disabled={syncingOrderId === order.id}
-                                title="مزامنة فورية الآن"
-                                className="p-1 border text-slate-300 rounded transition-colors disabled:opacity-50 hover:brightness-110"
-                                style={{
-                                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
-                                  borderColor: 'var(--border-color)',
-                                  color: 'var(--color-primary)',
-                                }}
-                              >
-                                <Send className={`w-3 h-3 ${syncingOrderId === order.id ? 'animate-spin' : ''}`} />
-                              </button>
-                            </>
-                          ) : order.eta_status === 'invalid' || order.eta_status === 'failed' ? (
-                            <>
-                              <span
-                                title={order.eta_error_message || 'خطأ في التوثيق الضريبي'}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30 cursor-help"
-                              >
-                                <AlertCircle className="w-3 h-3" />
-                                <span>مرفوض</span>
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleSyncOrder(order.id)}
-                                disabled={syncingOrderId === order.id}
-                                title="إعادة المحاولة والإرسال للضرائب"
-                                className="p-1 bg-rose-950/40 hover:bg-rose-900 border border-rose-500/30 text-rose-400 rounded transition-colors disabled:opacity-50"
-                              >
-                                <Send className={`w-3 h-3 ${syncingOrderId === order.id ? 'animate-spin' : ''}`} />
-                              </button>
-                            </>
                           ) : (
-                            <>
-                              <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-800 text-slate-400">
-                                غير مربوط
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleSyncOrder(order.id)}
-                                disabled={syncingOrderId === order.id}
-                                title="إرسال الفاتورة لمنظومة الضرائب الآن"
-                                className="p-1 border text-slate-300 rounded transition-colors disabled:opacity-50 hover:brightness-110"
-                                style={{
-                                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
-                                  borderColor: 'var(--border-color)',
-                                  color: 'var(--color-primary)',
-                                }}
-                              >
-                                <Send className={`w-3 h-3 ${syncingOrderId === order.id ? 'animate-spin' : ''}`} />
-                              </button>
-                            </>
+                            <button
+                              type="button"
+                              onClick={() => handleSyncOrder(order.id)}
+                              disabled={syncingOrderId === order.id}
+                              className="px-2 py-0.5 rounded text-[10px] font-bold border border-amber-500/30 text-amber-300 hover:bg-amber-900/30 transition-colors disabled:opacity-50"
+                            >
+                              {syncingOrderId === order.id ? 'جاري الإرسال...' : 'إرسال للضرائب'}
+                            </button>
                           )}
                         </div>
                       </td>
@@ -460,13 +434,13 @@ export const OrdersHistoryTab: React.FC = () => {
                           <button
                             onClick={() => setSelectedOrderToPrint(order)}
                             title="إعادة طباعة الإيصال الحراري"
-                            className="p-1.5 border text-slate-300 rounded-lg transition-colors hover:bg-white/10"
+                            className="px-2.5 py-1 text-xs font-bold border text-slate-300 rounded-lg transition-colors hover:bg-white/10"
                             style={{
                               backgroundColor: 'rgba(255, 255, 255, 0.05)',
                               borderColor: 'var(--border-color)',
                             }}
                           >
-                            <Printer className="w-3.5 h-3.5" />
+                            طباعة
                           </button>
 
                           {/* Cancel / Refund Order Button */}
@@ -474,9 +448,9 @@ export const OrdersHistoryTab: React.FC = () => {
                             <button
                               onClick={() => setOrderToCancel(order)}
                               title="إلغاء واسترجاع الفاتورة وإعادة المخزون"
-                              className="p-1.5 border border-rose-500/30 text-rose-400 bg-rose-950/30 hover:bg-rose-900/50 rounded-lg transition-colors"
+                              className="px-2.5 py-1 text-xs font-bold border border-rose-500/30 text-rose-400 bg-rose-950/30 hover:bg-rose-900/50 rounded-lg transition-colors"
                             >
-                              <RotateCcw className="w-3.5 h-3.5" />
+                              إلغاء
                             </button>
                           )}
                         </div>
@@ -489,7 +463,6 @@ export const OrdersHistoryTab: React.FC = () => {
                   <td colSpan={9} className="py-8">
                     <EmptyState
                       compact
-                      icon={<FileText className="w-6 h-6 opacity-70" />}
                       title={search || statusFilter ? 'لا توجد فواتير مطابقة لخيارات البحث' : 'لا توجد فواتير مسجلة في الأرشيف'}
                       description={search || statusFilter ? 'جرب تغيير نص البحث أو اختيار جميع الحالات' : 'تظهر هنا جميع فواتير الغسيل المكتملة وعمليات الدفع'}
                     />
@@ -500,6 +473,49 @@ export const OrdersHistoryTab: React.FC = () => {
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Toolbar */}
+        {totalPages > 1 && (
+          <div
+            className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 border-t text-xs"
+            style={{
+              backgroundColor: 'rgba(0, 0, 0, 0.25)',
+              borderColor: 'var(--border-color)',
+            }}
+          >
+            <div className="text-slate-400 font-medium">
+              عرض{' '}
+              <strong className="text-slate-200 font-bold">
+                {(currentPage - 1) * PAGE_SIZE + 1} - {Math.min(currentPage * PAGE_SIZE, filteredOrders.length)}
+              </strong>{' '}
+              من إجمالي <strong className="text-slate-200 font-bold">{filteredOrders.length}</strong> فاتورة
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1.5 rounded-xl border border-white/10 text-slate-300 hover:text-white hover:bg-white/5 font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                &larr; الصفحة السابقة
+              </button>
+
+              <span className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-slate-200 font-mono font-bold">
+                {currentPage} / {totalPages}
+              </span>
+
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="px-3 py-1.5 rounded-xl border border-white/10 text-slate-300 hover:text-white hover:bg-white/5 font-bold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                الصفحة التالية &rarr;
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

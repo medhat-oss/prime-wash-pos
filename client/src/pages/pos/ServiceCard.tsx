@@ -1,5 +1,4 @@
 import React from 'react';
-import { Check, Droplets } from 'lucide-react';
 import { Service } from '../../types/index.js';
 import { formatEGP, resolveMediaUrl } from '../../utils/formatters.js';
 
@@ -12,47 +11,60 @@ interface ServiceCardProps {
 export const ServiceCard: React.FC<ServiceCardProps> = ({ service, isSelected, onSelect }) => {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const hasMedia = service.media_type && service.media_type !== 'none' && !!service.media_url;
-  const resolvedUrl = hasMedia ? resolveMediaUrl(service.media_url) : '';
+  const resolvedUrl = React.useMemo(() => (hasMedia ? resolveMediaUrl(service.media_url) : ''), [hasMedia, service.media_url]);
 
   React.useEffect(() => {
-    if (service.media_type === 'video' && videoRef.current) {
+    if (service.media_type === 'video' && isSelected && videoRef.current) {
       videoRef.current.play().catch(() => {});
     }
-  }, [service.media_type, service.media_url]);
+  }, [service.media_type, isSelected, resolvedUrl]);
+
+  const posterUrl = React.useMemo(() => {
+    if (!resolvedUrl) return '';
+    return resolvedUrl.replace(/\.(mp4|webm)$/i, '.jpg');
+  }, [resolvedUrl]);
 
   return (
     <button
       type="button"
       onClick={() => onSelect(service)}
-      className={`group relative text-right p-4 rounded-3xl transition-all duration-300 border flex flex-col justify-between overflow-hidden shadow-lg hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98] select-none ${
+      className={`group relative text-right p-4 rounded-3xl transition-[transform,border-color,opacity] duration-150 border flex flex-col justify-between overflow-hidden shadow-md select-none transform-gpu active:scale-[0.98] ${
         isSelected
           ? 'ring-2'
-          : 'hover:border-slate-600'
+          : 'hover:border-slate-500'
       }`}
       style={{
         backgroundColor: 'var(--card-bg)',
         borderColor: isSelected ? 'var(--color-primary)' : 'var(--border-color)',
-        boxShadow: isSelected ? '0 10px 25px rgba(0, 0, 0, 0.45)' : undefined,
+        boxShadow: isSelected ? '0 4px 14px rgba(0, 0, 0, 0.4)' : undefined,
+        contain: 'layout style paint',
+        transform: 'translateZ(0)',
       }}
     >
-      {/* Background Media: Video or HD Image */}
+      {/* Background Media: Video (toggled via opacity/play without DOM unmount) or Optimized Poster */}
       {hasMedia && (
         <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none rounded-3xl">
           {service.media_type === 'video' ? (
             <video
               ref={videoRef}
               src={resolvedUrl}
-              autoPlay
+              autoPlay={isSelected}
               loop
               muted
               playsInline
-              className="w-full h-full object-cover opacity-30 group-hover:opacity-45 transition-opacity duration-500 scale-105 group-hover:scale-110 transform"
+              preload="metadata"
+              poster={posterUrl}
+              className={`w-full h-full object-cover transition-opacity duration-300 scale-100 ${
+                isSelected ? 'opacity-35' : 'opacity-20'
+              }`}
             />
           ) : (
             <img
-              src={resolvedUrl}
+              src={posterUrl}
               alt={service.name}
-              className="w-full h-full object-cover opacity-25 group-hover:opacity-40 transition-opacity duration-500 scale-105 group-hover:scale-110 transform"
+              loading="lazy"
+              decoding="async"
+              className="w-full h-full object-cover opacity-25 group-hover:opacity-35 transition-opacity duration-200 scale-100"
             />
           )}
           {/* Subtle gradient overlay to keep text fully legible */}
@@ -64,17 +76,17 @@ export const ServiceCard: React.FC<ServiceCardProps> = ({ service, isSelected, o
       <div className="relative z-10 w-full">
         <div className="flex items-center justify-between gap-2 mb-3">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-[11px] font-bold px-2.5 py-1 rounded-xl bg-slate-950/80 text-slate-200 border border-slate-700/80 backdrop-blur-md">
+            <span className="text-[11px] font-bold px-2.5 py-1 rounded-xl bg-slate-950/90 text-slate-200 border border-slate-700/80 shadow-sm">
               {service.category || 'عام'}
             </span>
           </div>
 
           {isSelected && (
             <div
-              className="w-7 h-7 rounded-xl flex items-center justify-center text-white shadow-md animate-in zoom-in-50 duration-200"
+              className="px-2 py-0.5 rounded-lg text-white text-xs font-black shadow-md animate-in zoom-in-50 duration-200"
               style={{ backgroundColor: 'var(--color-primary)' }}
             >
-              <Check className="w-4 h-4 stroke-[3]" />
+              محدد
             </div>
           )}
         </div>
@@ -97,9 +109,8 @@ export const ServiceCard: React.FC<ServiceCardProps> = ({ service, isSelected, o
             {service.recipes.slice(0, 3).map((r, i) => (
               <span
                 key={i}
-                className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-lg bg-slate-950/90 text-slate-300 border border-slate-800/90 backdrop-blur-md"
+                className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-lg bg-slate-950/95 text-slate-300 border border-slate-800 shadow-sm"
               >
-                <Droplets className="w-2.5 h-2.5" style={{ color: 'var(--color-primary)' }} />
                 <span>{r.inventory_name || 'مادة'}:</span>
                 <span className="font-mono font-bold" style={{ color: 'var(--color-primary)' }}>
                   {r.quantity_grams}g
@@ -107,7 +118,7 @@ export const ServiceCard: React.FC<ServiceCardProps> = ({ service, isSelected, o
               </span>
             ))}
             {service.recipes.length > 3 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-lg bg-slate-900/90 text-slate-400 border border-slate-800 backdrop-blur-md">
+              <span className="text-[10px] px-1.5 py-0.5 rounded-lg bg-slate-900/95 text-slate-400 border border-slate-800">
                 +{service.recipes.length - 3} مواد
               </span>
             )}
@@ -129,4 +140,12 @@ export const ServiceCard: React.FC<ServiceCardProps> = ({ service, isSelected, o
   );
 };
 
-export default ServiceCard;
+export default React.memo(ServiceCard, (prev, next) => {
+  return (
+    prev.isSelected === next.isSelected &&
+    prev.service.id === next.service.id &&
+    prev.service.price === next.service.price &&
+    prev.service.name === next.service.name &&
+    prev.service.status === next.service.status
+  );
+});

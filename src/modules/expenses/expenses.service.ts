@@ -217,21 +217,64 @@ export class ExpensesService {
         [startDate]
       ),
 
-      // 5. Real-Time Accrued Payroll from attendance and wage rates
+      // 5. Real-Time Accrued Payroll from attendance and wage rates per operational staff member
       query(
-        `SELECT 
-           COALESCE(SUM(a.actual_hours * e.hourly_rate), 0)::float AS accrued_base_salary,
-           COALESCE(SUM(a.overtime_hours * COALESCE(e.overtime_hourly_rate, e.hourly_rate)), 0)::float AS accrued_overtime,
-           COUNT(DISTINCT a.employee_id)::int AS active_staff_with_attendance,
-           (SELECT COUNT(*)::int FROM employees WHERE status = 'active' AND (hourly_rate > 0 OR name != 'مستر فتحي')) AS total_operational_staff,
-           (
-             SELECT COALESCE(SUM(CASE WHEN t.type = 'bonus' THEN t.amount WHEN t.type IN ('advance', 'deduction') THEN -t.amount ELSE 0 END), 0)::float
-             FROM employee_transactions t
-             WHERE t.date >= $1::date AND t.date < ($1::date + INTERVAL '1 month')
-           ) AS net_transactions_adjustment
-         FROM attendance a
-         JOIN employees e ON a.employee_id = e.id
-         WHERE a.work_date >= $1::date AND a.work_date < ($1::date + INTERVAL '1 month')`,
+        `WITH emp_att AS (
+          SELECT 
+            e.id AS employee_id,
+            e.name,
+            e.hourly_rate::float AS hourly_rate,
+            COALESCE(e.overtime_hourly_rate, e.hourly_rate)::float AS overtime_hourly_rate,
+            COALESCE(SUM(a.actual_hours), 0)::float AS total_actual_hours,
+            COALESCE(SUM(a.overtime_hours), 0)::float AS total_overtime_hours,
+            COALESCE(SUM(a.deducted_hours), 0)::float AS total_deducted_hours
+          FROM employees e
+          LEFT JOIN attendance a ON a.employee_id = e.id 
+            AND a.work_date >= $1::date 
+            AND a.work_date < ($1::date + INTERVAL '1 month')
+          WHERE e.status = 'active' 
+            AND e.system_role != 'owner' 
+            AND e.role NOT ILIKE '%مالك%' 
+            AND e.name != 'مستر فتحي'
+          GROUP BY e.id, e.name, e.hourly_rate, e.overtime_hourly_rate
+        ),
+        emp_tx AS (
+          SELECT 
+            employee_id,
+            COALESCE(SUM(CASE WHEN type = 'bonus' THEN amount ELSE 0 END), 0)::float AS bonuses,
+            COALESCE(SUM(CASE WHEN type = 'deduction' THEN amount ELSE 0 END), 0)::float AS deductions,
+            COALESCE(SUM(CASE WHEN type = 'advance' THEN amount ELSE 0 END), 0)::float AS advances
+          FROM employee_transactions
+          WHERE status = 'pending'
+            AND date >= $1::date 
+            AND date < ($1::date + INTERVAL '1 month')
+          GROUP BY employee_id
+        ),
+        emp_calc AS (
+          SELECT 
+            ea.employee_id,
+            ea.name,
+            (ea.total_actual_hours * ea.hourly_rate)::float AS base_amount,
+            (ea.total_overtime_hours * ea.overtime_hourly_rate)::float AS ot_amount,
+            COALESCE(et.bonuses, 0)::float AS bonuses,
+            (ea.total_deducted_hours * ea.hourly_rate + COALESCE(et.deductions, 0) + COALESCE(et.advances, 0))::float AS total_deductions,
+            (
+              (ea.total_actual_hours * ea.hourly_rate) +
+              (ea.total_overtime_hours * ea.overtime_hourly_rate) +
+              COALESCE(et.bonuses, 0) -
+              (ea.total_deducted_hours * ea.hourly_rate + COALESCE(et.deductions, 0) + COALESCE(et.advances, 0))
+            )::float AS net_payable
+          FROM emp_att ea
+          LEFT JOIN emp_tx et ON et.employee_id = ea.employee_id
+        )
+        SELECT 
+          COUNT(*)::int AS total_operational_staff,
+          COALESCE(SUM(base_amount), 0)::float AS accrued_base_salary,
+          COALESCE(SUM(ot_amount), 0)::float AS accrued_overtime,
+          COALESCE(SUM(bonuses), 0)::float AS accrued_bonuses,
+          COALESCE(SUM(CASE WHEN net_payable > 0 THEN net_payable ELSE 0 END), 0)::float AS total_accrued_payable,
+          COALESCE(SUM(CASE WHEN net_payable < 0 THEN ABS(net_payable) ELSE 0 END), 0)::float AS total_pending_debts
+        FROM emp_calc`,
         [startDate]
       ),
 
@@ -289,13 +332,15 @@ export class ExpensesService {
     // Accrued Payroll (Real-time calculated wages for all active staff)
     const accruedBase = Number(accrued?.accrued_base_salary) || 0.0;
     const accruedOvertime = Number(accrued?.accrued_overtime) || 0.0;
-    const netTransactionsAdj = Number(accrued?.net_transactions_adjustment) || 0.0;
-    const accruedSalaries = Math.max(Number((accruedBase + accruedOvertime + netTransactionsAdj).toFixed(2)), 0.0);
-    const activeStaffCount = Number(accrued?.total_operational_staff) || Number(accrued?.active_staff_with_attendance) || 0;
-    const unpaidAccruedSalaries = Math.max(Number((accruedSalaries - disbursedSalaries).toFixed(2)), 0.0);
+    const accruedBonuses = Number(accrued?.accrued_bonuses) || 0.0;
+    const totalAccruedPayable = Number(accrued?.total_accrued_payable) || 0.0;
+    const totalPendingDebts = Number(accrued?.total_pending_debts) || 0.0;
+    const accruedSalaries = totalAccruedPayable;
+    const activeStaffCount = Number(accrued?.total_operational_staff) || 4;
+    const unpaidAccruedSalaries = Math.max(Number((totalAccruedPayable - disbursedSalaries).toFixed(2)), 0.0);
 
     // Primary Total Salaries for P&L: Use confirmed disbursed if payouts exist, otherwise fallback to accrued
-    const primaryTotalSalaries = disbursedSalaries > 0 ? disbursedSalaries : accruedSalaries;
+    const primaryTotalSalaries = disbursedSalaries > 0 ? disbursedSalaries : totalAccruedPayable;
     const totalOperatingCosts = Number((primaryTotalSalaries + totalExpenses).toFixed(2));
 
     // Cash-Basis Net Profit = Gross Revenue - (Operating Expenses + Disbursed Salaries)
@@ -303,7 +348,7 @@ export class ExpensesService {
     const cashProfitMargin = grossRevenue > 0 ? Number(((cashNetProfit / grossRevenue) * 100).toFixed(2)) : 0.0;
 
     // Accrual-Basis Net Profit = Gross Revenue - (Operating Expenses + Accrued Salaries)
-    const accrualNetProfit = Number((grossRevenue - (totalExpenses + accruedSalaries)).toFixed(2));
+    const accrualNetProfit = Number((grossRevenue - (totalExpenses + totalAccruedPayable)).toFixed(2));
     const accrualProfitMargin = grossRevenue > 0 ? Number(((accrualNetProfit / grossRevenue) * 100).toFixed(2)) : 0.0;
 
     // Process categories percentages
@@ -361,11 +406,13 @@ export class ExpensesService {
         payouts_count: disbursedPayoutsCount,
         base_salaries: pay.total_base_salaries || accruedBase,
         overtime_paid: pay.total_overtime_paid || accruedOvertime,
-        bonuses_paid: pay.total_bonuses_paid || Math.max(netTransactionsAdj, 0),
+        bonuses_paid: pay.total_bonuses_paid || accruedBonuses,
         // Explicit Dual Metrics
         disbursed_salaries: disbursedSalaries,
         disbursed_payouts_count: disbursedPayoutsCount,
-        accrued_salaries: accruedSalaries,
+        accrued_salaries: totalAccruedPayable,
+        total_accrued_payable: totalAccruedPayable,
+        total_pending_debts: totalPendingDebts,
         active_staff_count: activeStaffCount,
         unpaid_accrued_salaries: unpaidAccruedSalaries,
       },

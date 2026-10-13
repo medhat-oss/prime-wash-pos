@@ -11,6 +11,21 @@ export interface InventoryItem {
   updated_at: string;
 }
 
+export interface InventoryTransaction {
+  id: string;
+  inventory_item_id: string;
+  inventory_name?: string;
+  order_id?: string;
+  order_code?: string;
+  transaction_type: 'deduction_order' | 'restock' | 'manual_adjustment' | 'cancel_restore';
+  quantity_grams: number;
+  previous_stock_grams?: number;
+  new_stock_grams?: number;
+  cost_impact?: number;
+  notes?: string;
+  created_at: string;
+}
+
 export interface RecipeItem {
   id?: string;
   inventory_item_id: string;
@@ -43,6 +58,7 @@ export interface Employee {
   name: string;
   phone?: string;
   role: string;
+  system_role?: 'worker' | 'cashier' | 'manager' | 'owner';
   hourly_rate: number;
   overtime_hourly_rate?: number | null;
   target_weekly_days: number;
@@ -73,12 +89,17 @@ export interface Order {
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
   assigned_employee_id?: string;
   assigned_employee_name?: string;
+  cashier_id?: string;
+  cashier_name?: string;
+  shift_id?: string;
   eta_uuid?: string;
   eta_submission_id?: string;
-  eta_status?: 'not_synced' | 'pending' | 'valid' | 'invalid' | 'failed';
+  eta_status?: 'not_synced' | 'pending' | 'valid' | 'invalid' | 'failed' | 'submitted' | 'synced';
   eta_share_url?: string;
   eta_synced_at?: string;
   eta_error_message?: string;
+  is_synced?: boolean;
+  sync_status?: 'synced' | 'pending' | 'failed';
   notes?: string;
   created_at: string;
   updated_at: string;
@@ -154,6 +175,27 @@ export interface PayrollCalculation {
   pending_transactions: EmployeeTransaction[];
 }
 
+export interface AccruedPayrollSummary {
+  period: {
+    year: number;
+    month: number;
+    start: string;
+    end: string;
+  };
+  total_operational_staff: number;
+  total_accrued_payable: number;
+  total_pending_debts: number;
+  total_accrued_base: number;
+  total_accrued_overtime: number;
+  total_accrued_bonuses: number;
+  total_accrued_deductions: number;
+  total_advances_deducted: number;
+  disbursed_salaries: number;
+  disbursed_payouts_count: number;
+  unpaid_accrued_salaries: number;
+  individual_breakdowns: PayrollCalculation[];
+}
+
 export interface PayrollPayout {
   id: string;
   payout_code: string;
@@ -218,12 +260,14 @@ export interface TaxSettings {
   is_enabled: boolean;
   eta_sync_enabled?: boolean;
   environment: 'preprod' | 'production';
-  client_id?: string | null;
-  client_secret?: string | null;
+  company_name?: string | null;
   tax_registration_number?: string | null;
+  activity_code?: string | null;
   pos_serial?: string | null;
   branch_code?: string;
   pos_os_version?: string;
+  client_id?: string | null;
+  client_secret?: string | null;
   remote_signer_url?: string | null;
   remote_signer_token?: string | null;
   created_at?: string;
@@ -388,7 +432,8 @@ export interface MaterialConsumptionReport {
 export interface Expense {
   id: string;
   title: string;
-  category: 'إيجار' | 'كهرباء ومياه' | 'صيانة ومعدات' | 'أدوات ومواد نظافة' | 'بوفيه ومصاريف إدارية' | 'ضرائب ورسوم' | 'أخرى';
+  category: 'إيجار' | 'كهرباء ومياه' | 'صيانة ومعدات' | 'أدوات ومواد نظافة' | 'خامات ومواد تشغيل' | 'بوفيه ومصاريف إدارية' | 'ضرائب ورسوم' | 'أخرى';
+  expense_type?: 'fixed' | 'variable';
   amount: number;
   expense_date: string;
   payment_method: 'cash' | 'card' | 'transfer';
@@ -401,6 +446,7 @@ export interface Expense {
 export interface CreateExpenseInput {
   title: string;
   category?: string;
+  expense_type?: 'fixed' | 'variable';
   amount: number;
   expense_date?: string;
   payment_method?: 'cash' | 'card' | 'transfer';
@@ -408,16 +454,55 @@ export interface CreateExpenseInput {
   notes?: string;
 }
 
-export interface PnLSummary {
+export interface ClosedMonthLedger {
+  id: string;
   period: string;
   year: number;
   month: number;
   financials: {
     gross_revenue: number;
     net_taxable_revenue: number;
+    operating_revenue?: number;
+    effective_vat_deducted?: number;
+    is_live_tax_mode?: boolean;
+    tax_environment?: 'preprod' | 'production';
+    total_salaries: number;
+    total_expenses: number;
+    fixed_expenses?: number;
+    variable_expenses?: number;
+    net_profit: number;
+    profit_margin: number;
+    is_profitable: boolean;
+    total_operating_costs: number;
+  };
+  metrics: {
+    orders_count: number;
+    expenses_count: number;
+    payouts_count: number;
+  };
+  closed_at: string;
+  closed_by: string;
+  notes?: string;
+}
+
+export interface PnLSummary {
+  period: string;
+  year: number;
+  month: number;
+  is_month_closed?: boolean;
+  closed_ledger_info?: ClosedMonthLedger | null;
+  financials: {
+    gross_revenue: number;
+    net_taxable_revenue: number;
+    operating_revenue?: number;
+    effective_vat_deducted?: number;
+    is_live_tax_mode?: boolean;
+    tax_environment?: 'preprod' | 'production';
     total_vat_collected: number;
     total_salaries: number;
     total_expenses: number;
+    total_materials_purchased?: number;
+    total_shift_variance?: number;
     total_operating_costs: number;
     net_profit: number;
     profit_margin: number;
@@ -443,6 +528,8 @@ export interface PnLSummary {
     disbursed_salaries?: number;
     disbursed_payouts_count?: number;
     accrued_salaries?: number;
+    total_accrued_payable?: number;
+    total_pending_debts?: number;
     active_staff_count?: number;
     unpaid_accrued_salaries?: number;
   };
@@ -451,6 +538,10 @@ export interface PnLSummary {
     cash_expenses: number;
     card_expenses: number;
     transfer_expenses: number;
+    fixed_expenses_total?: number;
+    variable_expenses_total?: number;
+    fixed_expenses_count?: number;
+    variable_expenses_count?: number;
     categories_breakdown: Array<{
       category: string;
       count: number;
@@ -467,4 +558,92 @@ export interface PnLSummary {
   }>;
   generated_at: string;
 }
+
+export interface ClosedShiftWorkerStat {
+  employee_id: string;
+  name: string;
+  role: string;
+  count: number;
+  totalSales: number;
+}
+
+export interface ClosedShift {
+  id: string;
+  shift_code: string;
+  cashier_id?: string;
+  cashier_name: string;
+  cashier_role?: string;
+  active_device_id?: string;
+  shift_start: string;
+  shift_end: string;
+  duration_formatted?: string;
+  gross_sales: number;
+  cash_sales: number;
+  card_sales: number;
+  transfer_sales: number;
+  total_orders: number;
+  expected_cash: number;
+  actual_cash: number;
+  variance: number;
+  closing_notes?: string;
+  approved_by: string;
+  is_end_of_day: boolean;
+  orders: Order[];
+  active_workers_breakdown?: ClosedShiftWorkerStat[];
+  created_at: string;
+}
+
+export interface ActiveShiftSession {
+  id?: string;
+  name?: string;
+  role?: string;
+  shift_id?: string;
+  shift_code?: string;
+  cashier_id: string;
+  cashier_name: string;
+  cashier_role?: string;
+  active_device_id?: string;
+  shift_start: string;
+  opening_cash?: number;
+  status?: 'active' | 'closed';
+  updated_at?: string;
+  total_orders?: number;
+  gross_sales?: number;
+  cash_sales?: number;
+  card_sales?: number;
+  transfer_sales?: number;
+  total_discount?: number;
+  total_tax?: number;
+}
+
+export interface LandingHeroSection {
+  media_type: 'image' | 'video';
+  media_url: string;
+  fallback_image_url?: string;
+  show_overlay_text: boolean;
+  title: string;
+  subtitle: string;
+}
+
+export interface LandingOfferCard {
+  id: string;
+  title: string;
+  badge?: string;
+  media_type: 'image' | 'video';
+  media_url: string;
+  fallback_image_url?: string;
+  whatsapp_number: string;
+  whatsapp_prefilled_text: string;
+}
+
+export interface LandingPageConfig {
+  hero_section_1: LandingHeroSection;
+  offer_card_1: LandingOfferCard;
+  offer_card_2: LandingOfferCard;
+  hero_section_2: LandingHeroSection;
+  whatsapp_header_number?: string;
+  updated_at?: string;
+}
+
+
 

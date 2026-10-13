@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { Lock, Delete, X, ShieldAlert, ArrowRight, Loader2, KeyRound } from 'lucide-react';
 import { setAdminPin, verifyAdminPin } from '../api/client.js';
+import { safeSessionStorage } from '../utils/safeStorage.js';
+import { useToast } from './Toast.js';
 
 interface AdminLockModalProps {
   isOpen: boolean;
@@ -14,6 +15,7 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const toast = useToast();
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [isShaking, setIsShaking] = useState(false);
@@ -22,8 +24,11 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
   const triggerError = (msg: string) => {
     setError(msg);
     setIsShaking(true);
-    setPin('');
-    setTimeout(() => setIsShaking(false), 500);
+    toast.error(msg, 'فشل الدخول');
+    setTimeout(() => {
+      setIsShaking(false);
+      setPin('');
+    }, 400);
   };
 
   const handleVerify = useCallback(
@@ -34,25 +39,27 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
         return;
       }
 
-      const currentAdminPin =
-        (typeof window !== 'undefined'
-          ? localStorage.getItem('cw_admin_pin') || localStorage.getItem('admin_master_pin')
-          : null) || '1234';
-
       setIsVerifying(true);
       setError('');
       try {
+        console.log('[AdminLockModal] Attempting verification for PIN length:', targetPin.length);
         const isValid = await verifyAdminPin(targetPin);
-        if (isValid && targetPin === currentAdminPin.trim()) {
+        if (isValid) {
+          console.log('[AdminLockModal] PIN verified successfully');
           setAdminPin(targetPin);
+          safeSessionStorage.setItem('cw_admin_pin', targetPin);
+          safeSessionStorage.setItem('cw_admin_unlocked', 'true');
+          safeSessionStorage.setItem('cw_active_tab', 'admin');
           setPin('');
           setError('');
           onSuccess(targetPin);
         } else {
-          triggerError('رمز PIN غير صحيح! يرجى التأكد من الرمز.');
+          console.error('[AdminLockModal] Invalid PIN entered');
+          triggerError('رمز PIN غير صحيح! يرجى التأكد من الرمز والمحاولة مجدداً.');
         }
-      } catch {
-        triggerError('رمز PIN غير صحيح! يرجى التأكد من الرمز.');
+      } catch (err: any) {
+        console.error('[AdminLockModal-Verify-Error]', err);
+        triggerError(err?.message || 'تعذر التحقق من رمز PIN! تحقق من الاتصال بالخادم.');
       } finally {
         setIsVerifying(false);
       }
@@ -60,17 +67,17 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
     [pin, onSuccess]
   );
 
-
   const handleInputDigit = useCallback(
     async (digit: string) => {
-      if (pin.length < 6 && !isVerifying) {
+      if (isVerifying) return;
+      if (pin.length < 6) {
         setError('');
         const newPin = pin + digit;
         setPin(newPin);
 
         // Auto verify if user enters maximum 6 digits
         if (newPin.length === 6) {
-          handleVerify(newPin);
+          await handleVerify(newPin);
         }
       }
     },
@@ -151,24 +158,13 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
           onClick={onClose}
           type="button"
           title="إلغاء والرجوع للكاشير"
-          className="absolute top-4 left-4 p-2 text-slate-400 hover:text-white rounded-xl transition-colors hover:bg-white/5"
+          className="absolute top-4 left-4 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-white rounded-xl transition-colors hover:bg-white/5 font-bold text-sm"
         >
-          <X className="w-5 h-5" />
+          ✕
         </button>
 
-        {/* Lock Icon with Glowing Gradient Ring */}
-        <div
-          className="w-16 h-16 rounded-2xl text-white flex items-center justify-center mx-auto mb-3.5 shadow-xl"
-          style={{
-            background: 'linear-gradient(135deg, var(--color-primary), var(--color-secondary))',
-            boxShadow: '0 8px 20px rgba(0, 0, 0, 0.35)',
-          }}
-        >
-          {isVerifying ? <Loader2 className="w-8 h-8 animate-spin" /> : <Lock className="w-8 h-8" />}
-        </div>
-
         {/* Modal Title & Subtitle */}
-        <h3 className="text-xl font-black text-white">لوحة تحكم الإدارة</h3>
+        <h3 className="text-xl font-black text-white pt-2">لوحة تحكم الإدارة</h3>
         <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto leading-relaxed">
           يرجى إدخال رمز PIN السري (4 إلى 6 أرقام) للوصول
         </p>
@@ -202,7 +198,6 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
         {/* Error Alert Message */}
         {error ? (
           <div className="flex items-center justify-center gap-2 p-2.5 mb-4 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-300 text-xs font-semibold animate-in zoom-in-95">
-            <ShieldAlert className="w-4 h-4 shrink-0" />
             <span>{error}</span>
           </div>
         ) : (
@@ -236,7 +231,7 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
               borderColor: 'var(--border-color)',
             }}
           >
-            {pin ? <span>مسح الكل</span> : <ArrowRight className="w-3.5 h-3.5" />}
+            {pin ? <span>مسح الكل</span> : <span>رجوع</span>}
           </button>
 
           {/* Zero Button */}
@@ -257,13 +252,13 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
             type="button"
             onClick={handleBackspace}
             title="مسح رقم"
-            className="h-12 rounded-2xl text-slate-400 hover:text-slate-200 border flex items-center justify-center transition-all active:scale-95 hover:bg-white/10"
+            className="h-12 rounded-2xl text-slate-400 hover:text-slate-200 border flex items-center justify-center font-bold text-base transition-all active:scale-95 hover:bg-white/10"
             style={{
               backgroundColor: 'rgba(0, 0, 0, 0.4)',
               borderColor: 'var(--border-color)',
             }}
           >
-            <Delete className="w-5 h-5" />
+            ⌫
           </button>
         </div>
 
@@ -279,10 +274,8 @@ export const AdminLockModal: React.FC<AdminLockModalProps> = ({
               boxShadow: '0 4px 14px rgba(0, 0, 0, 0.35)',
             }}
           >
-            {isVerifying ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <KeyRound className="w-4 h-4" />
+            {isVerifying && (
+              <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
             )}
             <span>تأكيد ودخول لوحة الإدارة</span>
           </button>

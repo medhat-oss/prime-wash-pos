@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
-import { KeyRound, ShieldAlert, CheckCircle2, Loader2, Eye, EyeOff } from 'lucide-react';
 import Modal from './Modal.js';
-import { dashboardApi, setAdminPin } from '../api/client.js';
+import { setAdminPin, setStoredAdminPin, dashboardApi } from '../api/client.js';
+import { safeSessionStorage } from '../utils/safeStorage.js';
 import { useToast } from './Toast.js';
 
 interface ChangeAdminPinModalProps {
@@ -81,6 +81,10 @@ export const ChangeAdminPinModal: React.FC<ChangeAdminPinModalProps> = ({
 
       // Update session with new PIN
       setAdminPin(cleanNew);
+      setStoredAdminPin(cleanNew);
+      safeSessionStorage.setItem('cw_admin_pin', cleanNew);
+      safeSessionStorage.setItem('cw_admin_unlocked', 'true');
+      safeSessionStorage.setItem('cw_active_tab', 'admin');
       toast.success(res.message || 'تم تحديث رمز PIN للإدارة بنجاح!', 'تم التحديث');
 
       if (onSuccess) {
@@ -97,7 +101,7 @@ export const ChangeAdminPinModal: React.FC<ChangeAdminPinModalProps> = ({
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="تغيير رمز PIN للوحة الإدارة" maxWidth="md">
-      <form onSubmit={handleSubmit} className={`space-y-4 text-xs ${isShaking ? 'animate-shake' : ''}`}>
+      <form onSubmit={handleSubmit} noValidate className={`space-y-4 text-xs ${isShaking ? 'animate-shake' : ''}`}>
         {/* Header Banner */}
         <div
           className="p-3.5 rounded-2xl border flex items-center gap-3 shadow-inner"
@@ -106,14 +110,6 @@ export const ChangeAdminPinModal: React.FC<ChangeAdminPinModalProps> = ({
             borderColor: 'var(--border-color)',
           }}
         >
-          <div
-            className="w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 shadow-md"
-            style={{
-              background: 'linear-gradient(135deg, var(--color-primary), var(--color-secondary))',
-            }}
-          >
-            <KeyRound className="w-5 h-5" />
-          </div>
           <div>
             <div className="font-bold text-slate-200 text-sm">حماية لوحة التحكم والإدارة</div>
             <div className="text-slate-400 text-[11px] mt-0.5">
@@ -124,8 +120,7 @@ export const ChangeAdminPinModal: React.FC<ChangeAdminPinModalProps> = ({
 
         {/* Error Notification */}
         {error && (
-          <div className="flex items-center gap-2 p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-300 text-xs font-semibold animate-in zoom-in-95">
-            <ShieldAlert className="w-4 h-4 shrink-0" />
+          <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-300 text-xs font-semibold animate-in zoom-in-95">
             <span>{error}</span>
           </div>
         )}
@@ -159,9 +154,9 @@ export const ChangeAdminPinModal: React.FC<ChangeAdminPinModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowCurrent(!showCurrent)}
-                className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-200"
+                className="absolute left-3 top-2.5 text-[10px] text-slate-400 hover:text-slate-200 font-bold px-1.5 py-0.5 rounded bg-white/5 border border-white/10"
               >
-                {showCurrent ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                {showCurrent ? 'إخفاء' : 'إظهار'}
               </button>
             </div>
           </div>
@@ -193,9 +188,9 @@ export const ChangeAdminPinModal: React.FC<ChangeAdminPinModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowNew(!showNew)}
-                className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-200"
+                className="absolute left-3 top-2.5 text-[10px] text-slate-400 hover:text-slate-200 font-bold px-1.5 py-0.5 rounded bg-white/5 border border-white/10"
               >
-                {showNew ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                {showNew ? 'إخفاء' : 'إظهار'}
               </button>
             </div>
           </div>
@@ -227,9 +222,9 @@ export const ChangeAdminPinModal: React.FC<ChangeAdminPinModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowConfirm(!showConfirm)}
-                className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-200"
+                className="absolute left-3 top-2.5 text-[10px] text-slate-400 hover:text-slate-200 font-bold px-1.5 py-0.5 rounded bg-white/5 border border-white/10"
               >
-                {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                {showConfirm ? 'إخفاء' : 'إظهار'}
               </button>
             </div>
           </div>
@@ -258,10 +253,8 @@ export const ChangeAdminPinModal: React.FC<ChangeAdminPinModalProps> = ({
               backgroundColor: 'var(--color-primary)',
             }}
           >
-            {submitting ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <CheckCircle2 className="w-4 h-4" />
+            {submitting && (
+              <span className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin inline-block" />
             )}
             <span>حفظ رمز الـ PIN الجديد</span>
           </button>

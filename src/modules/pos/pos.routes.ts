@@ -11,4 +11,12 @@ router.get('/orders/:id', PosController.getById);
 router.patch('/orders/:id/status', requireFields(['status']), PosController.updateStatus);
 router.post('/orders/:id/cancel', requireAdminAuth, PosController.cancelOrder);
 
+// Shift routes (Multi-Device Active Shift & Archive)
+router.get('/shifts/active', PosController.getActiveShift);
+router.get('/shifts/current', PosController.getActiveShift);
+router.post('/shifts/start', requireFields(['cashier_id', 'cashier_name']), PosController.startActiveShift);
+router.post('/shifts/close', PosController.closeActiveShift);
+router.get('/shifts/history', PosController.getClosedShifts);
+router.delete('/shifts/:id', requireAdminAuth, PosController.deleteClosedShift);
+
 export default router;
