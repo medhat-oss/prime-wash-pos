@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { servicesApi, inventoryApi, uploadApi } from '../../api/client.js';
 import { Service, InventoryItem, RecipeItem } from '../../types/index.js';
 import { getStoredServices } from '../../utils/serviceStorage.js';
@@ -71,12 +71,15 @@ export const ServicesBomTab: React.FC = () => {
     }
   };
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async (isManualRefresh: boolean = false) => {
     try {
-      setLoading(true);
+      // Only show full skeleton if there are no existing cached services
+      if (isManualRefresh || services.length === 0) {
+        setLoading(true);
+      }
       const [servicesData, inventoryData] = await Promise.all([
-        servicesApi.getAll(undefined, true).catch(() => getStoredServices()),
-        inventoryApi.getAll(false, true).catch(() => getStoredInventory()),
+        servicesApi.getAll(undefined, isManualRefresh).catch(() => getStoredServices()),
+        inventoryApi.getAll(false, isManualRefresh).catch(() => getStoredInventory()),
       ]);
       setServices(Array.isArray(servicesData) ? servicesData : getStoredServices());
       setInventoryItems(Array.isArray(inventoryData) ? inventoryData : getStoredInventory());
@@ -87,7 +90,7 @@ export const ServicesBomTab: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [services.length, toast]);
 
 
   useEffect(() => {
@@ -117,7 +120,7 @@ export const ServicesBomTab: React.FC = () => {
   }, []);
 
 
-  const handleOpenAddModal = () => {
+  const handleOpenAddModal = useCallback(() => {
     setSelectedService(null);
     setServiceForm({
       name: '',
@@ -132,9 +135,9 @@ export const ServicesBomTab: React.FC = () => {
     setRecipeRows([]);
     setShowManualUrl(false);
     setIsModalOpen(true);
-  };
+  }, []);
 
-  const handleOpenEditModal = async (service: Service) => {
+  const handleOpenEditModal = useCallback((service: Service) => {
     setSelectedService(service);
     setServiceForm({
       name: service.name,
@@ -148,21 +151,22 @@ export const ServicesBomTab: React.FC = () => {
     });
     setShowManualUrl(false);
 
-    try {
-      const recipes = await servicesApi.getRecipes(service.id);
+    // Instant local population from already embedded recipes
+    if (Array.isArray(service.recipes) && service.recipes.length > 0) {
       setRecipeRows(
-        recipes.map((r: RecipeItem) => ({
+        service.recipes.map((r: RecipeItem) => ({
           inventory_item_id: r.inventory_item_id,
           quantity_grams: r.quantity_grams,
           notes: r.notes || '',
         }))
       );
-    } catch (err) {
+    } else {
       setRecipeRows([]);
     }
 
+    // Immediately open modal with 0ms network blocking
     setIsModalOpen(true);
-  };
+  }, []);
 
   const handleSaveUnifiedService = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -224,7 +228,7 @@ export const ServicesBomTab: React.FC = () => {
     }
   };
 
-  const handleConfirmDelete = async () => {
+  const handleConfirmDelete = useCallback(async () => {
     if (!serviceToDelete) return;
     try {
       setIsDeleting(true);
@@ -237,7 +241,7 @@ export const ServicesBomTab: React.FC = () => {
     } finally {
       setIsDeleting(false);
     }
-  };
+  }, [serviceToDelete, toast, fetchData]);
 
   return (
     <div className="space-y-6 animate-fadeIn">
@@ -264,7 +268,7 @@ export const ServicesBomTab: React.FC = () => {
           </button>
 
           <button
-            onClick={fetchData}
+            onClick={() => fetchData(true)}
             className="px-3 py-2 border text-slate-300 rounded-xl text-xs font-bold transition-all backdrop-blur-md hover:bg-white/5"
             style={{
               backgroundColor: 'var(--card-bg)',
@@ -276,8 +280,8 @@ export const ServicesBomTab: React.FC = () => {
         </div>
       </div>
 
-      {/* Services Grid */}
-      {loading ? (
+      {/* Services Grid (Optimistic: Render cards immediately if present, only show skeleton on empty cold start) */}
+      {loading && services.length === 0 ? (
         <CardGridSkeleton count={6} columns={3} />
       ) : services.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">

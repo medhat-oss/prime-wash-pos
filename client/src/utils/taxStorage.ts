@@ -7,6 +7,7 @@
 import { TaxSettings, TaxStats, Service } from '../types/index.js';
 import { getStoredAllOrders } from './orderStorage.js';
 import { getStoredServices } from './serviceStorage.js';
+import { safeLocalStorage } from './safeStorage.js';
 
 const TAX_SETTINGS_KEY = 'cw_tax_settings';
 const SERVICE_TAX_CODES_KEY = 'cw_services_tax_codes';
@@ -50,7 +51,7 @@ export const calculateSubtotalAndTax = (
 export const getStoredTaxSettings = (): TaxSettings => {
   if (typeof window === 'undefined') return { ...DEFAULT_TAX_SETTINGS };
   try {
-    const raw = localStorage.getItem(TAX_SETTINGS_KEY);
+    const raw = safeLocalStorage.getItem(TAX_SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
@@ -61,13 +62,13 @@ export const getStoredTaxSettings = (): TaxSettings => {
       }
     }
   } catch (err) {
-    console.error('Error reading tax settings from localStorage:', err);
+    console.error('Error reading tax settings from storage:', err);
   }
   return { ...DEFAULT_TAX_SETTINGS };
 };
 
 /**
- * Save Tax & ETA settings to localStorage and dispatch update event
+ * Save Tax & ETA settings to safeLocalStorage and dispatch update event
  */
 export const saveStoredTaxSettings = (data: Partial<TaxSettings>): TaxSettings => {
   if (typeof window === 'undefined') {
@@ -83,11 +84,11 @@ export const saveStoredTaxSettings = (data: Partial<TaxSettings>): TaxSettings =
       ...data,
       updated_at: new Date().toISOString(),
     };
-    localStorage.setItem(TAX_SETTINGS_KEY, JSON.stringify(updated));
+    safeLocalStorage.setItem(TAX_SETTINGS_KEY, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent(TAX_SETTINGS_UPDATED_EVENT, { detail: updated }));
     return updated;
   } catch (err) {
-    console.error('Error saving tax settings to localStorage:', err);
+    console.error('Error saving tax settings to storage:', err);
     return { ...DEFAULT_TAX_SETTINGS, ...(data || {}) };
   }
 };

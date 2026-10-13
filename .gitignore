@@ -29,6 +29,7 @@ client/node_modules/
 # ----------------------------------------------------
 dist/
 client/dist/
+functions/
 .cache/
 .parcel-cache/
 .wrangler/

@@ -4,6 +4,8 @@
  * and Shift Closing Reports directly to management via Telegram Bot API.
  */
 
+import { safeLocalStorage } from './safeStorage.js';
+
 export interface TelegramSettings {
   bot_token: string;
   chat_id: string;
@@ -42,12 +44,12 @@ export const getEgyptFormattedDateTime = (date: Date = new Date()): string => {
 };
 
 /**
- * Retrieve saved Telegram settings from localStorage
+ * Retrieve saved Telegram settings safely
  */
 export const getStoredTelegramSettings = (): TelegramSettings => {
   if (typeof window === 'undefined') return { ...DEFAULT_TELEGRAM_SETTINGS };
   try {
-    const raw = localStorage.getItem(TELEGRAM_SETTINGS_KEY);
+    const raw = safeLocalStorage.getItem(TELEGRAM_SETTINGS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
@@ -75,7 +77,7 @@ export const saveStoredTelegramSettings = (data: Partial<TelegramSettings>): Tel
       ...data,
       updated_at: new Date().toISOString(),
     };
-    localStorage.setItem(TELEGRAM_SETTINGS_KEY, JSON.stringify(updated));
+    safeLocalStorage.setItem(TELEGRAM_SETTINGS_KEY, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent(TELEGRAM_SETTINGS_UPDATED_EVENT, { detail: updated }));
     window.dispatchEvent(new Event(TELEGRAM_SETTINGS_UPDATED_EVENT));
     window.dispatchEvent(new Event('storage'));
@@ -87,7 +89,8 @@ export const saveStoredTelegramSettings = (data: Partial<TelegramSettings>): Tel
 
 /**
  * Core Telegram Dispatcher using native fetch.
- * Silently resolves without throwing or interrupting UI operations.
+ * Dispatches via backend proxy endpoint to keep tokens out of client network logs,
+ * with direct fallback if running standalone.
  */
 export const sendTelegramAlert = async (message: string): Promise<boolean> => {
   if (typeof window === 'undefined') return false;
@@ -101,7 +104,23 @@ export const sendTelegramAlert = async (message: string): Promise<boolean> => {
   const chatId = settings.chat_id.trim();
 
   try {
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    // 1. Try secure edge proxy endpoint first (token hidden from client URL params)
+    const proxyRes = await fetch('/api/telegram/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: message,
+        bot_token: token,
+        chat_id: chatId,
+      }),
+    }).catch(() => null);
+
+    if (proxyRes && proxyRes.ok) {
+      return true;
+    }
+
+    // 2. Direct fallback (if proxy is unavailable)
+    const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`;
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -173,7 +192,7 @@ export const notifyLowStockAlert = async (
   // Deduplication guard check
   let notifiedMap: Record<string, boolean> = {};
   try {
-    const raw = localStorage.getItem(NOTIFIED_LOW_STOCK_KEY);
+    const raw = safeLocalStorage.getItem(NOTIFIED_LOW_STOCK_KEY);
     if (raw) notifiedMap = JSON.parse(raw) || {};
   } catch {}
 
@@ -185,7 +204,7 @@ export const notifyLowStockAlert = async (
   // Mark as alerted
   notifiedMap[itemId] = true;
   try {
-    localStorage.setItem(NOTIFIED_LOW_STOCK_KEY, JSON.stringify(notifiedMap));
+    safeLocalStorage.setItem(NOTIFIED_LOW_STOCK_KEY, JSON.stringify(notifiedMap));
   } catch {}
 
   const remainingKg = (remainingGrams / 1000).toFixed(2);
@@ -205,12 +224,12 @@ export const notifyLowStockAlert = async (
 export const clearLowStockNotificationFlag = (itemId: string): void => {
   if (typeof window === 'undefined') return;
   try {
-    const raw = localStorage.getItem(NOTIFIED_LOW_STOCK_KEY);
+    const raw = safeLocalStorage.getItem(NOTIFIED_LOW_STOCK_KEY);
     if (raw) {
       const map: Record<string, boolean> = JSON.parse(raw) || {};
       if (map[itemId]) {
         delete map[itemId];
-        localStorage.setItem(NOTIFIED_LOW_STOCK_KEY, JSON.stringify(map));
+        safeLocalStorage.setItem(NOTIFIED_LOW_STOCK_KEY, JSON.stringify(map));
       }
     }
   } catch {}
@@ -276,7 +295,29 @@ export const sendTestTelegramNotification = async (
 التاريخ والوقت: ${time}`;
 
   try {
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    // 1. Try secure edge proxy endpoint first
+    const proxyRes = await fetch('/api/telegram/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        bot_token: token,
+        chat_id: chatId,
+      }),
+    }).catch(() => null);
+
+    if (proxyRes) {
+      const pData: any = await proxyRes.json().catch(() => null);
+      if (proxyRes.ok && pData?.success) {
+        return { success: true, message: 'تم إرسال الإشعار التجريبي بنجاح إلى التليجرام!' };
+      }
+      if (!proxyRes.ok && pData?.message) {
+        return { success: false, message: `فشل الإرسال: ${pData.message}` };
+      }
+    }
+
+    // 2. Direct fallback
+    const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

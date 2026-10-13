@@ -22,13 +22,15 @@ function getAllowedOrigin(requestOrigin?: string | null): string {
   try {
     const originUrl = new URL(requestOrigin);
     const host = originUrl.hostname.toLowerCase();
-    if (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host.endsWith('.pages.dev') ||
+    const port = originUrl.port;
+    const isLocalhost = (host === 'localhost' || host === '127.0.0.1') && (!port || ['5173', '3000', '4173', '8788'].includes(port));
+    const isExactPrimeWash =
+      host === 'prime-wash-pos.pages.dev' ||
+      host.endsWith('.prime-wash-pos.pages.dev') ||
       host === 'primewash.eg' ||
-      host.endsWith('.primewash.eg')
-    ) {
+      host === 'www.primewash.eg';
+
+    if (isLocalhost || isExactPrimeWash) {
       return requestOrigin;
     }
   } catch {}
@@ -1130,6 +1132,11 @@ export async function onRequest(context: any): Promise<Response> {
 
     // GET /api/pos/orders
     if (path === 'pos/orders' && method === 'GET') {
+      const limitParam = parseInt(url.searchParams.get('limit') || '100', 10);
+      const safeLimit = Math.max(1, Math.min(Number.isNaN(limitParam) ? 100 : limitParam, 100));
+      const offsetParam = parseInt(url.searchParams.get('offset') || '0', 10);
+      const safeOffset = Math.max(0, Number.isNaN(offsetParam) ? 0 : offsetParam);
+
       const rows = await sql`
         SELECT 
           o.id,
@@ -1164,12 +1171,14 @@ export async function onRequest(context: any): Promise<Response> {
         LEFT JOIN services s ON o.service_id = s.id
         LEFT JOIN employees e ON o.assigned_employee_id = e.id
         ORDER BY o.created_at DESC
-        LIMIT 250
+        LIMIT ${safeLimit} OFFSET ${safeOffset}
       `;
 
       return jsonResponse({
         success: true,
         count: rows.length,
+        limit: safeLimit,
+        offset: safeOffset,
         data: rows,
       });
     }
@@ -2351,14 +2360,26 @@ export async function onRequest(context: any): Promise<Response> {
 
     // GET /api/expenses
     if (path === 'expenses' && method === 'GET') {
+      const limitParam = parseInt(url.searchParams.get('limit') || '100', 10);
+      const safeLimit = Math.max(1, Math.min(Number.isNaN(limitParam) ? 100 : limitParam, 100));
+      const offsetParam = parseInt(url.searchParams.get('offset') || '0', 10);
+      const safeOffset = Math.max(0, Number.isNaN(offsetParam) ? 0 : offsetParam);
+
       const rows = await sql`
         SELECT id, title, category, amount::float AS amount, expense_date, payment_method, receipt_reference, notes, created_at, updated_at
         FROM expenses
+        WHERE expense_date >= (CURRENT_DATE - INTERVAL '3 months')
         ORDER BY expense_date DESC, created_at DESC
-        LIMIT 200
+        LIMIT ${safeLimit} OFFSET ${safeOffset}
       `;
 
-      return jsonResponse({ success: true, count: rows.length, data: rows });
+      return jsonResponse({
+        success: true,
+        count: rows.length,
+        limit: safeLimit,
+        offset: safeOffset,
+        data: rows,
+      });
     }
 
     // POST /api/expenses
@@ -2774,6 +2795,57 @@ export async function onRequest(context: any): Promise<Response> {
         },
         message: 'تم اعتماد الإيصال بمصلحة الضرائب بنجاح'
       });
+    }
+
+    // POST /api/telegram/dispatch (Secure Telegram Forwarder)
+    if (path === 'telegram/dispatch' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const text = typeof body.text === 'string' ? body.text.trim() : '';
+      const customChatId = typeof body.chat_id === 'string' ? body.chat_id.trim() : null;
+      const customToken = typeof body.bot_token === 'string' ? body.bot_token.trim() : null;
+
+      if (!text) {
+        return errorResponse('نص الرسالة مطلوب', 400, requestOrigin);
+      }
+
+      // Check DB settings or env if not supplied in body
+      let token = customToken;
+      let chatId = customChatId;
+
+      if (!token || !chatId) {
+        try {
+          const sysSettings = await sql`SELECT telegram_config FROM system_settings ORDER BY updated_at DESC NULLS LAST LIMIT 1`;
+          const cfg = sysSettings && sysSettings[0]?.telegram_config ? sysSettings[0].telegram_config : null;
+          if (cfg) {
+            token = token || cfg.bot_token;
+            chatId = chatId || cfg.chat_id;
+          }
+        } catch {}
+      }
+
+      if (!token || !chatId) {
+        return errorResponse('إعدادات بوت التليجرام غير مكتملة', 400, requestOrigin);
+      }
+
+      try {
+        const tgRes = await fetch(`https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text,
+            parse_mode: 'HTML',
+          }),
+        });
+
+        const tgData: any = await tgRes.json().catch(() => null);
+        if (tgData?.ok) {
+          return jsonResponse({ success: true, message: 'تم إرسال الإشعار بنجاح' }, 200, requestOrigin);
+        }
+        return errorResponse(tgData?.description || 'فشل خادم تليجرام في إرسال الرسالة', 400, requestOrigin);
+      } catch (tgErr: any) {
+        return errorResponse(tgErr?.message || 'تعذر الاتصال بخوادم تليجرام', 502, requestOrigin);
+      }
     }
 
     // GET /api/dashboard/reports/vat-summary
