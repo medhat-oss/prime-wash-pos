@@ -616,32 +616,65 @@ export async function onRequest(context: any): Promise<Response> {
     if (path === 'pos/shifts/history' && method === 'GET') {
       const rows = await sql`
         SELECT 
-          id,
-          shift_code,
-          cashier_id,
-          cashier_name,
-          COALESCE(cashier_role, 'كاشير واستقبال') AS cashier_role,
-          shift_start,
-          shift_end,
-          opening_cash::float AS opening_cash,
-          gross_sales::float AS gross_sales,
-          cash_sales::float AS cash_sales,
-          card_sales::float AS card_sales,
-          transfer_sales::float AS transfer_sales,
-          total_orders::int AS total_orders,
-          expected_cash::float AS expected_cash,
-          actual_cash::float AS actual_cash,
-          variance::float AS variance,
-          status,
-          closing_notes,
-          approved_by,
-          is_end_of_day,
-          active_workers_breakdown,
-          created_at,
-          updated_at
-        FROM shifts
-        WHERE status = 'closed'
-        ORDER BY shift_start DESC
+          s.id,
+          s.shift_code,
+          s.cashier_id,
+          s.cashier_name,
+          COALESCE(s.cashier_role, 'كاشير واستقبال') AS cashier_role,
+          s.shift_start,
+          s.shift_end,
+          s.opening_cash::float AS opening_cash,
+          s.gross_sales::float AS gross_sales,
+          s.cash_sales::float AS cash_sales,
+          s.card_sales::float AS card_sales,
+          s.transfer_sales::float AS transfer_sales,
+          s.total_orders::int AS total_orders,
+          s.expected_cash::float AS expected_cash,
+          s.actual_cash::float AS actual_cash,
+          s.variance::float AS variance,
+          s.status,
+          s.closing_notes,
+          s.approved_by,
+          s.is_end_of_day,
+          s.active_workers_breakdown,
+          s.created_at,
+          s.updated_at,
+          COALESCE(
+            (
+              SELECT json_agg(
+                json_build_object(
+                  'id', o.id,
+                  'order_code', o.order_code,
+                  'car_plate', o.car_plate,
+                  'car_type', o.car_type,
+                  'customer_name', o.customer_name,
+                  'customer_phone', o.customer_phone,
+                  'service_id', o.service_id,
+                  'service_name', COALESCE(srv.name, 'خدمة غسيل'),
+                  'subtotal', o.subtotal::float,
+                  'tax_amount', o.tax_amount::float,
+                  'total_amount', o.total_amount::float,
+                  'payment_method', o.payment_method,
+                  'status', o.status,
+                  'assigned_employee_id', o.assigned_employee_id,
+                  'assigned_employee_name', emp.name,
+                  'created_at', o.created_at
+                ) ORDER BY o.created_at DESC
+              )
+              FROM orders o
+              LEFT JOIN services srv ON srv.id = o.service_id
+              LEFT JOIN employees emp ON emp.id = o.assigned_employee_id
+              WHERE (
+                o.shift_id = s.id 
+                OR (o.shift_id IS NULL AND o.cashier_id = s.cashier_id AND o.created_at >= s.shift_start AND (s.shift_end IS NULL OR o.created_at <= s.shift_end))
+              )
+              AND o.status != 'cancelled'
+            ),
+            '[]'::json
+          ) AS orders
+        FROM shifts s
+        WHERE s.status = 'closed'
+        ORDER BY s.shift_start DESC
         LIMIT 100
       `;
 
