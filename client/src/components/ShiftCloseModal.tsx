@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Modal from './Modal.js';
 import { Employee, Order, ClosedShift, ActiveShiftSession } from '../types/index.js';
-import { posApi, getStoredAdminPin } from '../api/client.js';
+import { posApi } from '../api/client.js';
 import { formatEGP, formatDateTime } from '../utils/formatters.js';
 import { clockOutAllActiveEmployees, clockOutSingleCashier } from '../utils/attendanceStorage.js';
 import { getStoredShiftOrders, clearStoredShiftOrders, deduplicateOrders } from '../utils/orderStorage.js';
-import { appendClosedShift, saveStoredActiveShiftSession, saveLocalCashierSession } from '../utils/shiftStorage.js';
+import { saveLocalCashierSession } from '../utils/shiftStorage.js';
 import { notifyShiftClose } from '../utils/telegramNotifications.js';
 import { useToast } from './Toast.js';
 
@@ -190,63 +190,12 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
     win.document.close();
   };
 
-  // Dual PIN Verification: Cashier PIN or Owner/Master Admin PIN Override
-  const verifyShiftClosePin = (enteredPin: string): { isValid: boolean; approverName: string } => {
-    const trimmed = (enteredPin || '').trim();
-    if (!trimmed) return { isValid: false, approverName: '' };
-
-    // 1. Check Master Admin PIN from localStorage (default 1234)
-    const adminPin = getStoredAdminPin();
-
-    if (trimmed === adminPin.trim()) {
-      return { isValid: true, approverName: 'لوحة الإدارة العامة (Admin Override)' };
-    }
-
-    // 2. Check Owner PIN (مستر فتحي - pin_code: 1000 or from employee list)
-    const ownerEmp = employees.find(
-      (e) => e.name.includes('فتحي') || e.role.includes('مالك') || e.role.includes('مدير')
-    );
-    const ownerPin = ownerEmp?.pin_code || '1000';
-    if (trimmed === ownerPin.trim()) {
-      return { isValid: true, approverName: ownerEmp?.name || 'مستر فتحي (مالك المنشأة)' };
-    }
-
-    // 3. Check Active Cashier PIN
-    const cashierId = cashier?.cashier_id || cashier?.id;
-    const cashierName = cashier?.cashier_name || cashier?.name;
-    const cashierEmp = employees.find(
-      (e) => (cashierId && e.id === cashierId) || (cashierName && e.name === cashierName)
-    );
-    const cashierPin = cashierEmp?.pin_code || '1111';
-    if (trimmed === cashierPin.trim()) {
-      return { isValid: true, approverName: cashierEmp?.name || cashierName || 'الكاشير المسؤول' };
-    }
-
-    // Also check if entered PIN matches any active cashier employee
-    const matchingEmp = employees.find((e) => e.pin_code && e.pin_code.trim() === trimmed);
-    if (matchingEmp && (matchingEmp.id === cashierId || matchingEmp.name === cashierName)) {
-      return { isValid: true, approverName: matchingEmp.name };
-    }
-
-    return { isValid: false, approverName: '' };
-  };
-
-  // Submit Shift Close with Dual-PIN Verification
+  // Submit Shift Close with Server-Side Dual-PIN Verification
   const handleConfirmCloseShift = async () => {
-    if (!authPin.trim()) {
+    const trimmedPin = (authPin || '').trim();
+    if (!trimmedPin) {
       setPinError('يرجى إدخال رمز PIN السري لتأكيد تقفيل الشيفت');
       toast.warning('يرجى إدخال رمز PIN السري لتأكيد تقفيل الشيفت');
-      return;
-    }
-
-    const { isValid, approverName } = verifyShiftClosePin(authPin);
-    if (!isValid) {
-      setPinError('رمز PIN غير صحيح! يجب إدخال رمز الكاشير المسؤول عن الشفت أو رمز مالك المنشأة.');
-      toast.error(
-        'رمز PIN غير صحيح! يجب إدخال رمز الكاشير المسؤول عن الشفت أو رمز مالك المنشأة.',
-        'فشل التحقق'
-      );
-      setAuthPin('');
       return;
     }
 
@@ -258,10 +207,10 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
       const resolvedCashierName = cashier?.cashier_name || cashier?.name || 'كاشير';
       const resolvedCashierRole = cashier?.cashier_role || cashier?.role || 'كاشير';
 
-      // Construct archived closed shift record
+      // Construct shift payload with entered PIN for server-side verification
       const shiftRecord: ClosedShift = {
-        id: `shift-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-        shift_code: `SH-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${Math.floor(100 + Math.random() * 900)}`,
+        id: cashier?.shift_id || cashier?.id || `shift-${Date.now()}`,
+        shift_code: cashier?.shift_code || `SH-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${Math.floor(100 + Math.random() * 900)}`,
         cashier_id: resolvedCashierId,
         cashier_name: resolvedCashierName,
         cashier_role: resolvedCashierRole,
@@ -277,20 +226,20 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
         actual_cash: numericActualCash ?? metrics.cashTotal,
         variance: variance ?? 0,
         closing_notes: closingNotes.trim() || undefined,
-        approved_by: approverName,
+        approved_by: 'الإدارة',
         is_end_of_day: isEndOfDayClose,
         orders: [...orders],
         active_workers_breakdown: [],
+        pin: trimmedPin,
         created_at: new Date().toISOString(),
       };
 
-      // Save to archive storage and API
-      appendClosedShift(shiftRecord);
-      saveStoredActiveShiftSession(null);
-      posApi.closeActiveShift(shiftRecord).catch(() => {});
+      // Call server endpoint directly to authenticate and close
+      const serverResult = await posApi.closeActiveShift(shiftRecord);
+      const approverName = serverResult.approved_by || 'الإدارة';
 
       // Dispatch automated Telegram shift closure notification
-      notifyShiftClose(shiftRecord).catch(() => {});
+      notifyShiftClose(serverResult).catch(() => {});
 
       // Unconditionally clear active shift orders since this shift is now officially closed & archived
       clearStoredShiftOrders();
@@ -300,7 +249,7 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
         const { totalClockedOut } = clockOutAllActiveEmployees(employees);
         toast.success(
           `تم تقفيل يوم العمل بالكامل واعتماده بواسطة (${approverName}) وتصفية شفت كافة الموظفين (${totalClockedOut} موظف) بنجاح وجرد الخزينة بمبلغ ${formatEGP(
-            numericActualCash ?? metrics.cashTotal
+            serverResult.actual_cash ?? numericActualCash ?? metrics.cashTotal
           )}`,
           'تم التقفيل النهائي ليوم العمل'
         );
@@ -311,7 +260,7 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
         }
         toast.success(
           `تم تقفيل وردية الكاشير (${resolvedCashierName}) واعتمادها بواسطة (${approverName}) بنجاح وتسليم الشيفت وجرد الخزينة بمبلغ ${formatEGP(
-            numericActualCash ?? metrics.cashTotal
+            serverResult.actual_cash ?? numericActualCash ?? metrics.cashTotal
           )}`,
           'تم تسليم الشيفت'
         );
@@ -330,7 +279,10 @@ export const ShiftCloseModal: React.FC<ShiftCloseModalProps> = ({
       onShiftClosed();
       onClose();
     } catch (err: any) {
-      toast.error(err.message, 'تعذر اعتماد تقفيل الشيفت');
+      const errMsg = err?.message || 'رمز PIN غير صحيح أو غير مصرح له بتقفيل الشيفت';
+      setPinError(errMsg);
+      toast.error(errMsg, 'فشل تقفيل الشيفت');
+      setAuthPin('');
     } finally {
       setClosing(false);
     }

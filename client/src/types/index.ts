@@ -590,6 +590,7 @@ export interface ClosedShift {
   is_end_of_day: boolean;
   orders: Order[];
   active_workers_breakdown?: ClosedShiftWorkerStat[];
+  pin?: string;
   created_at: string;
 }
 

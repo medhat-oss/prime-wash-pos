@@ -1005,6 +1005,11 @@ export const posApi = {
       }
     } catch (err: any) {
       console.warn('[POS API Fallback]', err?.message || err);
+      // If error is authentication/authorization or invalid data, throw it immediately
+      const status = err?.status || err?.response?.status;
+      if (status === 401 || status === 403 || status === 400 || err?.message?.includes('PIN')) {
+        throw err;
+      }
     }
 
     saveStoredActiveShiftSession(null);

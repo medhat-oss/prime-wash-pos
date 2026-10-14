@@ -426,19 +426,117 @@ export async function onRequest(context: any): Promise<Response> {
     // POST /api/pos/shifts/close
     if (path === 'pos/shifts/close' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
+      const pin = String(body.pin || body.pin_code || '').trim();
       const shiftId = String(body.id || body.shift_id || '');
       const shiftCode = String(body.shift_code || '');
+
+      if (!pin) {
+        return errorResponse('يرجى إدخال رمز PIN السري لتأكيد تقفيل الشيفت', 400, requestOrigin);
+      }
+
+      // 1. Fetch current active or targeted shift
+      const shiftRows = await sql`
+        SELECT * FROM shifts 
+        WHERE (
+          (${shiftId} != '' AND id::text = ${shiftId})
+          OR (${shiftCode} != '' AND shift_code = ${shiftCode})
+          OR status = 'active'
+        )
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+
+      if (!shiftRows || shiftRows.length === 0) {
+        return errorResponse('لم يتم العثور على وردية نشطة لتقفيلها', 404, requestOrigin);
+      }
+      const targetShift = shiftRows[0];
+
+      // 2. Validate PIN against DB: Master Admin PIN, Owner/Manager Role, or Current Cashier PIN
+      const settings = await sql`SELECT admin_pin FROM system_settings ORDER BY updated_at DESC NULLS LAST LIMIT 1`;
+      const systemAdminPin = settings && settings[0]?.admin_pin ? String(settings[0].admin_pin).trim() : '';
+
+      const managersAndOwners = await sql`
+        SELECT id, name, pin_code, system_role FROM employees
+        WHERE system_role IN ('owner', 'manager') AND status = 'active'
+      `;
+
+      let assignedCashier: any = null;
+      if (targetShift.cashier_id) {
+        const cashierRows = await sql`
+          SELECT id, name, pin_code, system_role FROM employees
+          WHERE id::text = ${targetShift.cashier_id} AND status = 'active'
+          LIMIT 1
+        `;
+        if (cashierRows && cashierRows.length > 0) {
+          assignedCashier = cashierRows[0];
+        }
+      }
+
+      let isAuthorized = false;
+      let approverName = 'الإدارة العامة';
+
+      if (systemAdminPin && safeConstantTimeEquals(pin, systemAdminPin)) {
+        isAuthorized = true;
+        approverName = 'لوحة الإدارة العامة (Master Admin)';
+      } else {
+        const matchedManager = managersAndOwners.find((m: any) =>
+          safeConstantTimeEquals(pin, String(m.pin_code || '').trim())
+        );
+        if (matchedManager) {
+          isAuthorized = true;
+          approverName = matchedManager.name + (matchedManager.system_role === 'owner' ? ' (مالك المنشأة)' : ' (مدير تشغيل)');
+        } else if (
+          assignedCashier &&
+          safeConstantTimeEquals(pin, String(assignedCashier.pin_code || '').trim())
+        ) {
+          isAuthorized = true;
+          approverName = assignedCashier.name + ' (الكاشير المسؤول)';
+        }
+      }
+
+      if (!isAuthorized) {
+        return jsonResponse(
+          {
+            success: false,
+            error: 'UNAUTHORIZED_PIN',
+            message: 'رمز PIN غير صحيح أو غير مصرح له باعتماد تقفيل هذا الشفت. يجب إدخال رمز الكاشير المسؤول أو رمز الإدارة.',
+          },
+          401,
+          requestOrigin
+        );
+      }
+
+      // 3. Recalculate accurate financial metrics directly from PostgreSQL orders
+      const resolvedShiftId = targetShift.id;
+      const orderMetrics = await sql`
+        SELECT 
+          COUNT(*)::int AS total_orders,
+          COALESCE(SUM(total_amount), 0)::float AS gross_sales,
+          COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN total_amount ELSE 0 END), 0)::float AS cash_sales,
+          COALESCE(SUM(CASE WHEN payment_method = 'card' THEN total_amount ELSE 0 END), 0)::float AS card_sales,
+          COALESCE(SUM(CASE WHEN payment_method IN ('transfer', 'split') THEN total_amount ELSE 0 END), 0)::float AS transfer_sales
+        FROM orders
+        WHERE (shift_id = ${resolvedShiftId} OR (shift_id IS NULL AND created_at >= ${targetShift.shift_start}))
+          AND status != 'cancelled'
+      `;
+
+      const m = orderMetrics[0] || {
+        total_orders: 0,
+        gross_sales: 0,
+        cash_sales: 0,
+        card_sales: 0,
+        transfer_sales: 0,
+      };
+
+      const openingCash = Number(targetShift.opening_cash) || 0;
+      const calculatedExpectedCash = Number((openingCash + Number(m.cash_sales)).toFixed(2));
+      const actualCash = body.actual_cash !== undefined && body.actual_cash !== null && body.actual_cash !== ''
+        ? Number(body.actual_cash)
+        : calculatedExpectedCash;
+      const calculatedVariance = Number((actualCash - calculatedExpectedCash).toFixed(2));
+
       const shiftEnd = body.shift_end || new Date().toISOString();
-      const grossSales = Number(body.gross_sales) || 0;
-      const cashSales = Number(body.cash_sales) || 0;
-      const cardSales = Number(body.card_sales) || 0;
-      const transferSales = Number(body.transfer_sales) || 0;
-      const totalOrders = Number(body.total_orders) || 0;
-      const expectedCash = Number(body.expected_cash) || 0;
-      const actualCash = Number(body.actual_cash) || 0;
-      const variance = Number(body.variance) || 0;
-      const closingNotes = body.closing_notes || null;
-      const approvedBy = body.approved_by || 'الإدارة';
+      const closingNotes = body.closing_notes ? String(body.closing_notes).trim() : null;
       const isEndOfDay = !!body.is_end_of_day;
       const workersBreakdown = JSON.stringify(body.active_workers_breakdown || []);
 
@@ -447,29 +545,25 @@ export async function onRequest(context: any): Promise<Response> {
         SET 
           status = 'closed',
           shift_end = ${shiftEnd},
-          gross_sales = ${grossSales},
-          cash_sales = ${cashSales},
-          card_sales = ${cardSales},
-          transfer_sales = ${transferSales},
-          total_orders = ${totalOrders},
-          expected_cash = ${expectedCash},
+          gross_sales = ${m.gross_sales},
+          cash_sales = ${m.cash_sales},
+          card_sales = ${m.card_sales},
+          transfer_sales = ${m.transfer_sales},
+          total_orders = ${m.total_orders},
+          expected_cash = ${calculatedExpectedCash},
           actual_cash = ${actualCash},
-          variance = ${variance},
+          variance = ${calculatedVariance},
           closing_notes = ${closingNotes},
-          approved_by = ${approvedBy},
+          approved_by = ${approverName},
           is_end_of_day = ${isEndOfDay},
           active_workers_breakdown = ${workersBreakdown}::jsonb,
           updated_at = CURRENT_TIMESTAMP
-        WHERE (
-          (${shiftId} != '' AND id::text = ${shiftId})
-          OR (${shiftCode} != '' AND shift_code = ${shiftCode})
-          OR status = 'active'
-        )
+        WHERE id = ${resolvedShiftId}
         RETURNING *
       `;
 
       // Auto clock-out cashier or all open attendance if end of day
-      const cashierId = body.cashier_id || updated[0]?.cashier_id;
+      const cashierId = targetShift.cashier_id || body.cashier_id;
       if (isEndOfDay) {
         try {
           const openAtts = await sql`
@@ -513,7 +607,7 @@ export async function onRequest(context: any): Promise<Response> {
 
       return jsonResponse({
         success: true,
-        message: 'تم إقفال الوردية النشطة وأرشفتها بنجاح',
+        message: 'تم إقفال الوردية النشطة وحساب الإجماليات واعتمادها بنجاح',
         data: updated[0] || body,
       });
     }
