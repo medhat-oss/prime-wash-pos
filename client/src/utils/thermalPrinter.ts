@@ -95,24 +95,28 @@ export const buildThermalReceiptHtml = (
   <style>
     @page {
       size: ${widthMm} auto;
-      margin: 0mm;
+      margin: 0;
     }
     *, *::before, *::after {
       box-sizing: border-box;
       margin: 0;
       padding: 0;
     }
-    body {
-      font-family: 'Courier New', Courier, monospace, 'Segoe UI', Tahoma, sans-serif;
-      font-size: ${is58mm ? '10px' : '12px'};
-      line-height: 1.35;
-      color: #000;
-      background: #FFF;
-      width: ${contentWidth};
+    html, body {
+      width: ${widthMm};
       margin: 0 auto;
-      padding: 6px 2px 14px 2px;
+      padding: 0;
+      background: #FFFFFF;
+      color: #000000;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
+    }
+    body {
+      font-family: 'Courier New', Courier, monospace, 'Segoe UI', Tahoma, sans-serif;
+      font-size: ${is58mm ? '10px' : '11px'};
+      line-height: 1.35;
+      width: ${contentWidth};
+      padding: 4px 1px 15mm 1px; /* 15mm Auto-Cut Buffer */
     }
     .text-center { text-align: center; }
     .text-right { text-align: right; }
@@ -121,11 +125,11 @@ export const buildThermalReceiptHtml = (
     .font-black { font-weight: 900; }
     
     .divider {
-      border-top: 1px dashed #000;
+      border-top: 1px dashed #000000;
       margin: 5px 0;
     }
     .double-divider {
-      border-top: 2px dashed #000;
+      border-top: 2px dashed #000000;
       margin: 6px 0;
     }
     
@@ -134,6 +138,8 @@ export const buildThermalReceiptHtml = (
       justify-content: space-between;
       align-items: baseline;
       margin: 2px 0;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
     
     .header-title {
@@ -143,15 +149,15 @@ export const buildThermalReceiptHtml = (
     }
     .header-subtitle {
       font-size: ${is58mm ? '8px' : '10px'};
-      color: #333;
+      color: #000000;
       margin-top: 1px;
     }
     
     .badge {
       display: inline-block;
       padding: 2px 6px;
-      background: #EEE;
-      border: 1px solid #000;
+      background: #FFFFFF;
+      border: 1.5px solid #000000;
       font-weight: bold;
       border-radius: 4px;
       font-size: ${is58mm ? '10px' : '12px'};
@@ -161,9 +167,11 @@ export const buildThermalReceiptHtml = (
       width: 100%;
       border-collapse: collapse;
       margin: 4px 0;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
     .items-table th {
-      border-bottom: 1px solid #000;
+      border-bottom: 1.5px solid #000000;
       padding: 3px 0;
       font-size: ${is58mm ? '9px' : '11px'};
     }
@@ -172,25 +180,38 @@ export const buildThermalReceiptHtml = (
     }
 
     .total-banner {
-      font-size: ${is58mm ? '13px' : '16px'};
+      font-size: ${is58mm ? '13px' : '15px'};
       font-weight: 900;
-      border: 1.5px solid #000;
+      border: 1.5px solid #000000;
       padding: 4px 6px;
       margin: 6px 0;
       text-align: center;
-      background: #F9F9F9;
+      background: #FFFFFF;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
 
     .qr-container {
       text-align: center;
       margin: 8px auto 4px auto;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
     
     .footer-note {
-      font-size: ${is58mm ? '8px' : '10px'};
+      font-size: ${is58mm ? '8px' : '9.5px'};
       text-align: center;
-      color: #333;
+      color: #000000;
       margin-top: 4px;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+
+    /* Auto-cutter spacer buffer */
+    .cut-spacer {
+      height: 12mm;
+      display: block;
+      visibility: hidden;
     }
   </style>
 </head>
@@ -307,9 +328,12 @@ export const buildThermalReceiptHtml = (
   <div class="footer-note">
     ${escapeHtml(opts.thankYouNote)}
   </div>
-  <div class="text-center" style="font-size: 8px; color: #777; margin-top: 4px;">
+  <div class="text-center" style="font-size: 8px; color: #000000; margin-top: 4px;">
     نظام برايم واش الذكي • POS LIVE
   </div>
+
+  <!-- Physical Auto-Cutter Clearance Buffer -->
+  <div class="cut-spacer"></div>
 </body>
 </html>`;
 };

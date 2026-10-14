@@ -245,12 +245,18 @@ export const ThermalReceipt: React.FC<ThermalReceiptProps> = ({ order, onClose }
 
             {/* QR Code Block */}
             <div className="text-center pt-2 pb-1">
-              <div className="inline-block p-1.5 bg-white rounded border border-gray-300 mb-1 shadow-sm">
-                <QRCodeSVG value={qrValue} size={paperWidth === '58mm' ? 70 : 85} level="M" includeMargin={false} />
+              <div className="inline-block p-1 bg-white rounded border border-black mb-1 shadow-sm">
+                <QRCodeSVG
+                  value={qrValue}
+                  size={paperWidth === '58mm' ? 70 : 85}
+                  level="M"
+                  includeMargin={false}
+                  style={{ shapeRendering: 'crispEdges', display: 'block' }}
+                />
               </div>
-              <div className="text-[9px] text-gray-500">امسح الرمز لمعاينة الإيصال الضريبي المعتمد</div>
-              <div className="text-[10px] text-gray-800 font-bold mt-1">شكراً لزيارتكم ونسعد بخدمتكم دائماً</div>
-              <div className="text-[9px] text-gray-400">Prime Wash POS Live</div>
+              <div className="text-[9px] text-gray-700">امسح الرمز لمعاينة الإيصال الضريبي المعتمد</div>
+              <div className="text-[10px] text-black font-bold mt-1">شكراً لزيارتكم ونسعد بخدمتكم دائماً</div>
+              <div className="text-[9px] text-gray-500">Prime Wash POS Live</div>
             </div>
           </div>
         </div>
