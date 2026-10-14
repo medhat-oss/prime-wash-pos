@@ -203,7 +203,7 @@ export const HrPayrollTab: React.FC = () => {
       const targetWeeklyDays = Number(employeeForm.target_weekly_days) || 6;
       const targetWeeklyHours = Number((targetDailyHours * targetWeeklyDays).toFixed(2));
 
-      const payload = {
+      const payload: any = {
         name: employeeForm.name.trim(),
         phone: employeeForm.phone.trim() || undefined,
         role: employeeForm.role.trim() || 'فني غسيل',
@@ -220,9 +220,14 @@ export const HrPayrollTab: React.FC = () => {
         target_weekly_hours: targetWeeklyHours,
         weekly_off_day: employeeForm.weekly_off_day,
         is_paid_weekly_off: Boolean(employeeForm.is_paid_weekly_off),
-        pin_code: employeeForm.pin_code || '1234',
         status: employeeForm.status,
       };
+
+      if (employeeForm.pin_code && employeeForm.pin_code.trim()) {
+        payload.pin_code = employeeForm.pin_code.trim();
+      } else if (!selectedEmployee) {
+        payload.pin_code = '1234';
+      }
 
       if (selectedEmployee) {
         await hrApi.updateEmployee(selectedEmployee.id, payload);
@@ -701,7 +706,7 @@ export const HrPayrollTab: React.FC = () => {
                                     target_weekly_hours: weeklyHours,
                                     weekly_off_day: emp.weekly_off_day || 'الجمعة',
                                     is_paid_weekly_off: Boolean(emp.is_paid_weekly_off),
-                                    pin_code: '1234',
+                                    pin_code: '',
                                     status: emp.status,
                                   });
                                   setIsEmployeeModalOpen(true);
@@ -1377,18 +1382,18 @@ export const HrPayrollTab: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold text-slate-400 mb-1.5">
-                رمز PIN السري لتسجيل الحضور والإنصراف
+                رمز PIN السري لتسجيل الدخول والشفتات {selectedEmployee && <span className="text-slate-500 font-normal">(اختياري عند التعديل)</span>}
               </label>
               <input
                 type="password"
                 maxLength={6}
-                required
-                placeholder="****"
+                required={!selectedEmployee}
+                placeholder={selectedEmployee ? 'اتركه فارغاً للإبقاء على الرمز الحالي' : '****'}
                 value={employeeForm.pin_code}
                 onChange={(e) =>
                   setEmployeeForm({ ...employeeForm, pin_code: e.target.value })
                 }
-                className="w-full border rounded-xl px-3.5 py-2 text-sm font-mono focus:outline-none font-bold text-amber-400"
+                className="w-full border rounded-xl px-3.5 py-2 text-sm font-mono focus:outline-none font-bold text-amber-400 placeholder:text-slate-500 placeholder:font-normal placeholder:text-xs"
                 style={{
                   backgroundColor: 'rgba(0, 0, 0, 0.4)',
                   borderColor: 'var(--border-color)',

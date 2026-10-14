@@ -933,11 +933,16 @@ export async function onRequest(context: any): Promise<Response> {
       const name = (body.name || '').trim();
       if (!name) return errorResponse('اسم الموظف مطلوب', 400, requestOrigin);
 
+      const VALID_ROLES = ['worker', 'cashier', 'manager', 'owner'];
+      const rawSystemRole = body.system_role ? String(body.system_role).trim().toLowerCase() : 'worker';
+      const systemRole = VALID_ROLES.includes(rawSystemRole) ? rawSystemRole : 'worker';
+
       const phone = body.phone ? body.phone.trim() : null;
       const role = (body.role || 'فني غسيل').trim();
-      const systemRole = body.system_role || 'worker';
       const hourlyRate = Number(body.hourly_rate) || 30.0;
-      const overtimeRate = body.overtime_hourly_rate ? Number(body.overtime_hourly_rate) : null;
+      const overtimeRate = body.overtime_hourly_rate !== undefined && body.overtime_hourly_rate !== null && body.overtime_hourly_rate !== ''
+        ? Number(body.overtime_hourly_rate)
+        : null;
       const targetWeeklyDays = Number(body.target_weekly_days) || 6;
       const targetWeeklyHours = Number(body.target_weekly_hours) || 48.0;
       const weeklyOffDay = (body.weekly_off_day || 'الجمعة').trim();
@@ -976,20 +981,34 @@ export async function onRequest(context: any): Promise<Response> {
       const existing = await sql`SELECT id FROM employees WHERE id = ${empId}`;
       if (!existing || existing.length === 0) return errorResponse('الموظف المطلوب غير موجود', 404, requestOrigin);
 
+      const VALID_ROLES = ['worker', 'cashier', 'manager', 'owner'];
+      let targetSystemRole = null;
+      if (body.system_role) {
+        const cleanedRole = String(body.system_role).trim().toLowerCase();
+        if (VALID_ROLES.includes(cleanedRole)) {
+          targetSystemRole = cleanedRole;
+        } else {
+          return errorResponse('نوع الحساب أو الصلاحية المحددة غير صالحة', 400, requestOrigin);
+        }
+      }
+
       const updated = await sql`
         UPDATE employees
         SET
           name = COALESCE(${body.name ? body.name.trim() : null}, name),
           phone = COALESCE(${body.phone ? body.phone.trim() : null}, phone),
           role = COALESCE(${body.role ? body.role.trim() : null}, role),
-          system_role = COALESCE(${body.system_role || null}, system_role),
+          system_role = COALESCE(${targetSystemRole}, system_role),
           hourly_rate = COALESCE(${body.hourly_rate !== undefined ? Number(body.hourly_rate) : null}, hourly_rate),
-          overtime_hourly_rate = ${body.overtime_hourly_rate !== undefined ? (body.overtime_hourly_rate ? Number(body.overtime_hourly_rate) : null) : null},
+          overtime_hourly_rate = CASE 
+            WHEN ${body.overtime_hourly_rate !== undefined} THEN ${body.overtime_hourly_rate !== null && body.overtime_hourly_rate !== '' ? Number(body.overtime_hourly_rate) : null}
+            ELSE overtime_hourly_rate
+          END,
           target_weekly_days = COALESCE(${body.target_weekly_days !== undefined ? Number(body.target_weekly_days) : null}, target_weekly_days),
           target_weekly_hours = COALESCE(${body.target_weekly_hours !== undefined ? Number(body.target_weekly_hours) : null}, target_weekly_hours),
           weekly_off_day = COALESCE(${body.weekly_off_day ? body.weekly_off_day.trim() : null}, weekly_off_day),
           is_paid_weekly_off = COALESCE(${body.is_paid_weekly_off !== undefined ? Boolean(body.is_paid_weekly_off) : null}, is_paid_weekly_off),
-          pin_code = COALESCE(${body.pin_code ? body.pin_code.trim() : null}, pin_code),
+          pin_code = COALESCE(${body.pin_code && String(body.pin_code).trim() ? String(body.pin_code).trim() : null}, pin_code),
           status = COALESCE(${body.status || null}, status),
           updated_at = NOW()
         WHERE id = ${empId}
@@ -1356,61 +1375,93 @@ export async function onRequest(context: any): Promise<Response> {
         return jsonResponse({ success: true, message: 'الفاتورة ملغاة بالفعل', data: order }, 200, requestOrigin);
       }
 
-      // 1. Update order status to cancelled
-      const updatedRows = await sql`
-        UPDATE orders
-        SET 
-          status = 'cancelled',
-          notes = CASE 
-            WHEN notes IS NULL OR notes = '' THEN ${'ملغاة: ' + reason}
-            ELSE notes || ${' | ملغاة: ' + reason}
-          END,
-          updated_at = NOW()
-        WHERE id::text = ${orderId}
-        RETURNING *
-      `;
-
-      // 2. Restore BOM inventory items
+      // Check if service recipes exist to restore
+      let recipes: any[] = [];
       if (order.service_id) {
-        try {
-          const recipes = await sql`
-            SELECT inventory_item_id, quantity_grams::float AS quantity_grams
-            FROM service_recipes
-            WHERE service_id = ${order.service_id}
-          `;
-          for (const recipe of recipes) {
-            await sql`
+        recipes = await sql`
+          SELECT inventory_item_id, quantity_grams::float AS quantity_grams
+          FROM service_recipes
+          WHERE service_id = ${order.service_id}
+        `;
+      }
+
+      const noteText = 'ملغاة: ' + reason;
+
+      try {
+        // Atomic transaction: neon supports sql.transaction([...queries])
+        // We execute all updates atomically so stock reversion and order cancellation succeed or fail together.
+        const txQueries: any[] = [
+          // 1. Cancel order
+          sql`
+            UPDATE orders
+            SET 
+              status = 'cancelled',
+              notes = CASE 
+                WHEN notes IS NULL OR notes = '' THEN ${noteText}
+                ELSE notes || ${' | ' + noteText}
+              END,
+              updated_at = NOW()
+            WHERE id::text = ${orderId} AND status != 'cancelled'
+            RETURNING *
+          `
+        ];
+
+        // 2. Revert BOM inventory items & log transaction
+        for (const recipe of recipes) {
+          txQueries.push(
+            sql`
               UPDATE inventory_items 
               SET current_stock_grams = current_stock_grams + ${recipe.quantity_grams},
                   updated_at = NOW()
               WHERE id = ${recipe.inventory_item_id}
-            `;
-            try {
-              await sql`
-                INSERT INTO inventory_transactions (
-                  inventory_item_id, order_id, transaction_type, quantity_grams,
-                  cost_impact, notes
-                ) VALUES (
-                  ${recipe.inventory_item_id},
-                  ${order.id},
-                  'cancel_restore',
-                  ${recipe.quantity_grams},
-                  0,
-                  ${'إعادة المواد الخام للمخزن لإلغاء طلب رقم ' + (order.order_code || orderId)}
-                )
-              `;
-            } catch {}
-          }
-        } catch (e: any) {
-          console.warn('[Inventory Restore Warning]', e.message);
+            `
+          );
+          txQueries.push(
+            sql`
+              INSERT INTO inventory_transactions (
+                inventory_item_id, order_id, transaction_type, quantity_grams,
+                cost_impact, notes
+              ) VALUES (
+                ${recipe.inventory_item_id},
+                ${order.id},
+                'cancel_restore',
+                ${recipe.quantity_grams},
+                0,
+                ${'إعادة المواد الخام للمخزن لإلغاء طلب رقم ' + (order.order_code || orderId)}
+              )
+            `
+          );
         }
-      }
 
-      return jsonResponse({
-        success: true,
-        message: 'تم إلغاء الفاتورة واسترجاع أرصدة المواد الخام بنجاح',
-        data: updatedRows[0],
-      }, 200, requestOrigin);
+        let updatedOrder: any = null;
+        if (typeof (sql as any).transaction === 'function') {
+          const results = await (sql as any).transaction(txQueries);
+          updatedOrder = results[0]?.[0];
+        } else {
+          // Fallback if neon driver instance lacks .transaction method:
+          await sql`BEGIN`;
+          try {
+            const res = await txQueries[0];
+            updatedOrder = res?.[0];
+            for (let i = 1; i < txQueries.length; i++) {
+              await txQueries[i];
+            }
+            await sql`COMMIT`;
+          } catch (innerErr) {
+            await sql`ROLLBACK`;
+            throw innerErr;
+          }
+        }
+
+        return jsonResponse({
+          success: true,
+          message: 'تم إلغاء الفاتورة واسترجاع أرصدة المواد الخام بنجاح',
+          data: updatedOrder || { ...order, status: 'cancelled' },
+        }, 200, requestOrigin);
+      } catch (err: any) {
+        console.error('[Order Cancel Error]', err);
+        return errorResponse('فشل إلغاء الفاتورة واسترجاع المخزون: ' + (err.message || 'خطأ غير متوقع'), 500, requestOrigin);
+      }
     }
 
     // PATCH /api/pos/orders/:id/status
