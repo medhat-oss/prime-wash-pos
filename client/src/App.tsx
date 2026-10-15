@@ -37,13 +37,14 @@ function AppContent() {
 
   const [isLandingMode, setIsLandingMode] = useState<boolean>(Boolean(isPublicLandingRoute));
 
-  // Detect if user opened the app via direct Owner URL link (e.g. /?mode=owner, /?view=admin, #admin, /admin)
+  // Detect if user opened the app via direct Owner URL link (e.g. /?mode=owner, /?view=admin, #admin, /admin, or admin tab hash)
   const isDirectOwnerRoute =
     typeof window !== 'undefined' &&
     (window.location.search.includes('mode=owner') ||
       window.location.search.includes('view=admin') ||
       window.location.pathname.startsWith('/admin') ||
-      window.location.hash === '#admin');
+      window.location.hash === '#admin' ||
+      ['#overview', '#inventory', '#services', '#pos_appearance', '#hr', '#active_shift', '#landing_cms', '#orders', '#expenses', '#eta'].includes(window.location.hash));
 
   // 1. Initial State derived from active session in storage (Incognito safe)
   const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(() => {

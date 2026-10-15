@@ -100,12 +100,12 @@ export const AdminDashboard: React.FC = () => {
     setActiveTab(tabId);
     safeSessionStorage.setItem('cw_admin_active_tab', tabId);
     if (typeof window !== 'undefined' && window.location.hash !== `#${tabId}`) {
-      window.location.hash = tabId;
+      window.history.pushState(null, '', `#${tabId}`);
     }
   };
 
   useEffect(() => {
-    const handleHashChange = () => {
+    const handleUrlSync = () => {
       const hash = window.location.hash.replace(/^#/, '').trim();
       if (VALID_ADMIN_TABS.some((t) => t.id === hash)) {
         setActiveTab(hash as AdminTabId);
@@ -113,7 +113,8 @@ export const AdminDashboard: React.FC = () => {
       }
     };
 
-    window.addEventListener('hashchange', handleHashChange);
+    window.addEventListener('hashchange', handleUrlSync);
+    window.addEventListener('popstate', handleUrlSync);
 
     // Initial sync of hash if valid tab is selected but hash is missing/generic
     if (typeof window !== 'undefined') {
@@ -124,7 +125,8 @@ export const AdminDashboard: React.FC = () => {
     }
 
     return () => {
-      window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener('hashchange', handleUrlSync);
+      window.removeEventListener('popstate', handleUrlSync);
     };
   }, [activeTab]);
 

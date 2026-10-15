@@ -12,8 +12,7 @@ export function setupPwa(): void {
     const updateSW = registerSW({
       immediate: true,
       onNeedRefresh() {
-        console.log('🔄 [PWA] New version detected, auto-updating service worker...');
-        updateSW(true);
+        console.info('ℹ️ [PWA] New build cached in background. Will activate seamlessly on next session.');
       },
       onOfflineReady() {
         console.log('✅ [PWA] Prime Wash POS App Shell is cached and ready for 100% offline reloads.');
