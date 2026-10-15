@@ -74,7 +74,7 @@ function AppContent() {
   const [isChangePinModalOpen, setIsChangePinModalOpen] = useState(false);
   const [isClockModalOpen, setIsClockModalOpen] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>(() => getStoredEmployees());
-  const [isOwnerDirectMode] = useState<boolean>(isDirectOwnerRoute);
+  const [isOwnerDirectMode, setIsOwnerDirectMode] = useState<boolean>(isDirectOwnerRoute);
 
   // 3-Minute Inactivity Auto-Lock for Admin Session
   useAdminIdleTimer({
@@ -85,19 +85,21 @@ function AppContent() {
         setAdminPin(null);
         safeSessionStorage.removeItem('cw_admin_pin');
         safeSessionStorage.removeItem('cw_admin_unlocked');
+        safeSessionStorage.removeItem('cw_admin_active_tab');
         safeSessionStorage.setItem('cw_active_tab', 'pos');
       } catch {}
+      setIsOwnerDirectMode(false);
       setIsAdminUnlocked(false);
       setIsAdminLockModalOpen(false);
       setIsChangePinModalOpen(false);
       setActiveTab('pos');
+      if (typeof window !== 'undefined' && window.location.hash) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
       toast.warning(
         'تم قفل جلسة الإدارة تلقائياً لعدم النشاط (3 دقائق) لحماية وسرية البيانات',
         'تم قفل الجلسة'
       );
-      if (isOwnerDirectMode) {
-        setIsAdminLockModalOpen(true);
-      }
     },
   });
 
@@ -239,11 +241,16 @@ function AppContent() {
     setAdminPin(null);
     safeSessionStorage.removeItem('cw_admin_pin');
     safeSessionStorage.removeItem('cw_admin_unlocked');
+    safeSessionStorage.removeItem('cw_admin_active_tab');
     safeSessionStorage.setItem('cw_active_tab', 'pos');
+    setIsOwnerDirectMode(false);
     setIsAdminUnlocked(false);
     setIsAdminLockModalOpen(false);
     setIsChangePinModalOpen(false);
     setActiveTab('pos');
+    if (typeof window !== 'undefined' && window.location.hash) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
     toast.info('تم قفل جلسة الإدارة والعودة لشاشة الكاشير', 'تم تسجيل الخروج');
   };
 
@@ -265,7 +272,12 @@ function AppContent() {
         setIsAdminLockModalOpen(true);
       }
     } else {
+      setIsOwnerDirectMode(false);
       safeSessionStorage.setItem('cw_active_tab', 'pos');
+      safeSessionStorage.removeItem('cw_admin_active_tab');
+      if (typeof window !== 'undefined' && window.location.hash) {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      }
       setActiveTab('pos');
     }
   };
@@ -371,7 +383,15 @@ function AppContent() {
 
               <button
                 type="button"
-                onClick={() => setActiveTab('pos')}
+                onClick={() => {
+                  setIsOwnerDirectMode(false);
+                  setActiveTab('pos');
+                  safeSessionStorage.setItem('cw_active_tab', 'pos');
+                  safeSessionStorage.removeItem('cw_admin_active_tab');
+                  if (typeof window !== 'undefined' && window.location.hash) {
+                    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+                  }
+                }}
                 className="text-xs text-slate-400 hover:text-slate-200 flex items-center justify-center gap-1.5 mx-auto transition-colors"
               >
                 <span>الذهاب إلى شاشة الكاشير (POS)</span>

@@ -1,124 +1,82 @@
-# Prime Wash POS — Cloud-Native High-Throughput POS & ERP System
+# Prime Wash POS 🚗💧
 
-[![Runtime](https://img.shields.io/badge/Runtime-Cloudflare_Pages_%2B_Functions-F38020?logo=cloudflare)](https://pages.cloudflare.com)
-[![Database](https://img.shields.io/badge/Database-Neon_Serverless_PostgreSQL-00E599?logo=postgresql)](https://neon.tech)
-[![Frontend](https://img.shields.io/badge/Frontend-React_18_%2B_Vite_%2B_PWA-61DAFB?logo=react)](https://reactjs.org)
-[![TypeScript](https://img.shields.io/badge/Language-TypeScript_Strict-3178C6?logo=typescript)](https://www.typescriptlang.org)
-[![Offline](https://img.shields.io/badge/Architecture-Offline--First_%26_Event--Driven-8A2BE2)](#offline-first-sync-engine)
+An enterprise-grade, offline-first Point of Sale (POS) and management ecosystem engineered specifically for car wash and auto care centers. Built with a focus on fault tolerance, real-time data synchronization, and rigorous financial integrity.
 
-Prime Wash is an enterprise-grade, offline-first Point of Sale (POS) and Enterprise Resource Planning (ERP) platform architected for automotive service centers. Built specifically to handle zero-network blackouts, atomic inventory deduction at gram-level precision, and sub-16ms tactile input responsiveness.
+**Developed by:** Medhat Elaraby | Machine Code
 
 ---
 
-## 🏛️ System Architecture Overview
+## 🏗️ Architecture & Tech Stack
 
-The system employs a Hybrid Edge-Compute Topology:
+This project utilizes a modern, serverless architecture to ensure high availability and zero maintenance overhead.
 
-```mermaid
-graph TD
-    Client["Client PWA (Tablets, POS Terminals, Mobile)"]
-    
-    subgraph Edge Layer ["Cloudflare Global Anycast Edge"]
-        CF_Pages["Cloudflare Pages (Static SPA Assets & Workbox SW)"]
-        CF_Func["Cloudflare Functions /api/* (V8 Isolates)"]
-    end
-    
-    subgraph Data Tier ["Serverless Data Plane"]
-        Neon_Pooler["Neon Connection Pooler (PgBouncer)"]
-        Neon_DB["Neon PostgreSQL (Storage Engine)"]
-    end
-    
-    subgraph Local Tier ["Client-Side Isolation"]
-        IndexedDB["IndexedDB (Outbox Sync Queue)"]
-        LocalStorage["Encrypted Session & Telemetry Storage"]
-    end
-
-    Client -->|Hydrate SPA & Cache| CF_Pages
-    Client -->|Zero-Latency Read/Write| IndexedDB
-    Client -->|REST API over TLS 1.3| CF_Func
-    IndexedDB -->|Atomic Sync Engine| CF_Func
-    CF_Func -->|Pooled SQL over WebSocket/TCP| Neon_Pooler
-    Neon_Pooler --> Neon_DB
-```
+*   **Frontend:** React 18, TypeScript, Vite, Tailwind CSS.
+*   **Routing:** Zero-Flicker HTML5 History API & Custom SPA Router.
+*   **Backend / API:** Cloudflare Pages Functions (Edge Computing).
+*   **Database:** Neon Serverless PostgreSQL (`@neondatabase/serverless`).
+*   **Offline Persistence:** IndexedDB (`idb`) & LocalStorage.
+*   **PWA:** Workbox with Background Sync & Silent Updates.
 
 ---
 
-## ⚡ Core Engineering Highlights
+## ✨ Core Features
 
-### 1. Offline-First Sync Engine & Resilience
-- **Persistent Outbox Model:** Transactions, service orders, and cashier logs are immutably written to local IndexedDB stores first.
-- **Bi-Directional Conflict Resolution:** Uses deterministic UUIDs (`shift_code`, `order_id`) combined with monotonic timestamps and device identifiers (`cw_device_id`).
-- **Atomic Drain Mechanism:** Automatic network telemetry listeners (`navigator.onLine`, `visibilitychange`) trigger exponential-backoff queue flushing without blocking the UI thread.
+### 1. Offline-First Resilience
+Engineered to survive network drops. Transactions, inventory deductions, and HR logs are instantly written to IndexedDB. A background synchronization engine (`SyncEngine`) queues mutations and executes FIFO reconciliation with the Neon database automatically once connectivity is restored.
 
-### 2. Multi-Terminal Concurrency & Anti-Collision Sentinel
-- **Single-Active-Shift Invariant:** Strictly prevents split-brain shift sessions across multi-terminal setups.
-- **Session Takeover Protocol (Hijack Sentinel):** Heartbeat-driven terminal ownership checks verify terminal authority. When a shift is claimed by another terminal, the background sentinel initiates immediate screen security lockouts.
-- **Role-Gated Identity Verification:** Cryptographically decoupled PIN verification preventing role swap collisions between Cashier, Worker, and Manager tiers.
+### 2. Strict Financial Management & Z-Reports
+Comprehensive shift lifecycle management. The system tracks expected cash mathematically based on gross sales and payment methods. Auto-closes stale shifts (>24h) and supports atomic admin overrides for actual cash variance auditing.
 
-### 3. Sub-16ms Input Latency & Rendering Isolation
-- **Compositor Layer Promotion:** Service and product cards leverage hardware acceleration (`transform-gpu`, CSS `contain: layout style paint`) eliminating layout shifts.
-- **Micro-Decoupled Telemetry:** Status badges and heartbeat sentinels communicate via detached DOM CustomEvents, completely bypassing top-level React component tree re-rendering.
-- **Code-Splitting Strategy:** Monolithic bundle slashed using `React.lazy()` and chunk vendor splitting, ensuring cold boot POS load times under 800ms.
+### 3. Granular Inventory (BOM) & Analytics
+*   **Bill of Materials (BOM):** Deducts raw materials (e.g., grams of soap, ml of wax) incrementally per service rendered.
+*   **P&L Dashboard:** Real-time Profit and Loss calculations protected against NaN/Infinity division edge cases.
+*   **HR Payroll:** Real-time hourly wage calculation and attendance tracking.
 
-### 4. Gram-Level Atomic BOM Inventory Deduction
-- Real-time Bill of Materials (BOM) recalculations execute inside transactional boundaries with `FOR UPDATE` row-level locks, preventing inventory discrepancies under simultaneous checkout requests.
+### 4. Enterprise Security & Notifications
+*   **Edge-Proxied Alerts:** Telegram API calls are securely proxied through Cloudflare Workers to prevent Bot Token leakage on the client.
+*   **Admin Gate:** Secure, PIN-protected dashboard with robust session persistence and hash routing protection.
+*   **Strict CORS:** API endpoints restricted strictly to production and local development origins.
 
 ---
 
-## 🛠️ Technology Stack
-
-| Layer | Technologies |
-| :--- | :--- |
-| **Edge & Compute** | Cloudflare Pages, Cloudflare Workers Functions, Node.js (Enterprise Server fallback) |
-| **Database & ORM** | Neon Serverless PostgreSQL, Prisma / Raw Pooled SQL (`@neondatabase/serverless`) |
-| **Frontend Core** | React 18, TypeScript (Strict Mode), Vite, Tailwind CSS |
-| **PWA & Offline** | Workbox, IndexedDB (`idb`), Service Worker Offline Fallback |
-| **Hardware Integration** | Web Thermal Printer API (80mm ESC/POS Raw & Raster Generation) |
-| **Design System** | Fully responsive RTL-native UI (Tajawal Typography), Dual Color Palettes (Emerald / Carmine) |
-
----
-
-## 🚀 Quick Start & Local Development
+## 🚀 Local Development Setup
 
 ### Prerequisites
-- Node.js >= 18.0.0
-- npm >= 9.0.0
-- Cloudflare Wrangler CLI (`npm i -g wrangler`)
-- Neon PostgreSQL connection URI
+*   Node.js (v18+)
+*   npm or yarn
+*   A Neon PostgreSQL Database
+*   Cloudflare Wrangler CLI
 
-### 1. Installation
+### 1. Clone & Install
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/prime-wash-pos.git
-cd prime-wash-pos
-
-# Install dependencies (Root & Client)
+git clone https://github.com/medhat-oss/prime-wash-pos.git
+cd prime-wash-pos/client
 npm install
-npm --prefix client install
 ```
 
-### 2. Environment Setup
-Create a `.env` file in the root directory:
+### 2. Environment Variables
+Create a `.env` file in the `client` directory (for Vite) and `.dev.vars` in the root for Cloudflare Functions.
+
+`.dev.vars` (Backend Secrets):
 ```env
-DATABASE_URL=postgresql://user:password@ep-sample-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require
-PORT=3000
-NODE_ENV=development
+DATABASE_URL="postgres://user:password@endpoint.neon.tech/neondb?sslmode=require"
+TELEGRAM_BOT_TOKEN="your_bot_token"
+TELEGRAM_CHAT_ID="your_chat_id"
 ```
 
-### 3. Development Server
+### 3. Run Locally
 ```bash
-# Launch POS Frontend client with HMR
-npm run client:dev
-
-# Launch full Edge-emulated stack
-npx wrangler pages dev client/dist
+# Starts Vite dev server + Wrangler local edge proxy
+npm run dev
 ```
 
-### 4. Production Build & Deployment
-```bash
-# Typecheck & bundle optimized assets
-npm run --prefix client build
+---
 
-# Deploy to Cloudflare Pages Edge
-npx wrangler pages deploy client/dist --project-name prime-wash-pos
-```
+## 🛡️ Quality Assurance & Testing Notes
+*   **State Management:** Verified zero-flicker routing preventing React hydration mismatches and session traps.
+*   **Memory Safety:** Strict cleanup of interval timers and window event listeners to prevent memory leaks on 24/7 POS terminals.
+*   **SQL Safety:** All aggregation queries utilize `COALESCE` to guarantee valid numerical casting for missing periods.
+
+---
+
+© 2026 Machine Code. All Rights Reserved.
