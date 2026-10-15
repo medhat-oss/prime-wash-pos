@@ -1,4 +1,4 @@
-import React, { useState, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useState, useEffect, Component, ErrorInfo, ReactNode } from 'react';
 import { OverviewTab } from './OverviewTab.js';
 import { InventoryTab } from './InventoryTab.js';
 import { ServicesBomTab } from './ServicesBomTab.js';
@@ -9,6 +9,7 @@ import { LandingSettingsTab } from './LandingSettingsTab.js';
 import { OrdersHistoryTab } from './OrdersHistoryTab.js';
 import { ExpensesTab } from './ExpensesTab.js';
 import { EtaSettingsTab } from './EtaSettingsTab.js';
+import { safeSessionStorage } from '../../utils/safeStorage.js';
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -34,6 +35,12 @@ class TabErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState>
     console.error('Tab render error:', error, errorInfo);
   }
 
+  componentDidUpdate(prevProps: ErrorBoundaryProps) {
+    if (prevProps.tabName !== this.props.tabName && this.state.hasError) {
+      this.setState({ hasError: false, error: null });
+    }
+  }
+
   render() {
     if (this.state.hasError) {
       return (
@@ -42,6 +49,7 @@ class TabErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState>
           <h3 className="text-sm font-bold text-rose-300">حدث خطأ أثناء عرض هذا التبويب</h3>
           <p className="text-xs text-slate-400">{this.state.error?.message || 'تعذر تحميل محتوى التبويب'}</p>
           <button
+            type="button"
             onClick={() => this.setState({ hasError: false, error: null })}
             className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-md"
           >
@@ -54,21 +62,71 @@ class TabErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState>
   }
 }
 
-export const AdminDashboard: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<string>('overview');
+export const VALID_ADMIN_TABS = [
+  { id: 'overview', label: 'نظرة عامة' },
+  { id: 'inventory', label: 'المخزون بالجرام (BOM)' },
+  { id: 'services', label: 'الخدمات والوصفات' },
+  { id: 'pos_appearance', label: 'مظهر وخلفية الكاشير' },
+  { id: 'hr', label: 'الموظفين والرواتب' },
+  { id: 'active_shift', label: 'ورديات الكاشير' },
+  { id: 'landing_cms', label: 'صفحة العروض والزوار' },
+  { id: 'orders', label: 'سجل الفواتير' },
+  { id: 'expenses', label: 'المصروفات والأرباح (P&L)' },
+  { id: 'eta', label: 'الربط والامتثال الضريبي (ETA)' },
+] as const;
 
-  const tabs = [
-    { id: 'overview', label: 'نظرة عامة' },
-    { id: 'inventory', label: 'المخزون بالجرام (BOM)' },
-    { id: 'services', label: 'الخدمات والوصفات' },
-    { id: 'pos_appearance', label: 'مظهر وخلفية الكاشير' },
-    { id: 'hr', label: 'الموظفين والرواتب' },
-    { id: 'active_shift', label: 'ورديات الكاشير' },
-    { id: 'landing_cms', label: 'صفحة العروض والزوار' },
-    { id: 'orders', label: 'سجل الفواتير' },
-    { id: 'expenses', label: 'المصروفات والأرباح (P&L)' },
-    { id: 'eta', label: 'الربط والامتثال الضريبي (ETA)' },
-  ];
+export type AdminTabId = (typeof VALID_ADMIN_TABS)[number]['id'];
+
+const getInitialAdminTab = (): AdminTabId => {
+  if (typeof window !== 'undefined') {
+    const hash = window.location.hash.replace(/^#/, '').trim();
+    if (VALID_ADMIN_TABS.some((t) => t.id === hash)) {
+      return hash as AdminTabId;
+    }
+    const saved = safeSessionStorage.getItem('cw_admin_active_tab');
+    if (saved && VALID_ADMIN_TABS.some((t) => t.id === saved)) {
+      return saved as AdminTabId;
+    }
+  }
+  return 'overview';
+};
+
+export const AdminDashboard: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<AdminTabId>(getInitialAdminTab);
+
+  const handleTabChange = (targetTab: string) => {
+    if (!VALID_ADMIN_TABS.some((t) => t.id === targetTab)) return;
+    const tabId = targetTab as AdminTabId;
+    setActiveTab(tabId);
+    safeSessionStorage.setItem('cw_admin_active_tab', tabId);
+    if (typeof window !== 'undefined' && window.location.hash !== `#${tabId}`) {
+      window.location.hash = tabId;
+    }
+  };
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace(/^#/, '').trim();
+      if (VALID_ADMIN_TABS.some((t) => t.id === hash)) {
+        setActiveTab(hash as AdminTabId);
+        safeSessionStorage.setItem('cw_admin_active_tab', hash);
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+
+    // Initial sync of hash if valid tab is selected but hash is missing/generic
+    if (typeof window !== 'undefined') {
+      const currentHash = window.location.hash.replace(/^#/, '').trim();
+      if (!VALID_ADMIN_TABS.some((t) => t.id === currentHash)) {
+        window.history.replaceState(null, '', `#${activeTab}`);
+      }
+    }
+
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+    };
+  }, [activeTab]);
 
   return (
     <div className="space-y-5">
@@ -77,14 +135,14 @@ export const AdminDashboard: React.FC = () => {
         <div className="relative">
           <select
             value={activeTab}
-            onChange={(e) => setActiveTab(e.target.value)}
+            onChange={(e) => handleTabChange(e.target.value)}
             className="w-full py-3 px-4 rounded-2xl border text-xs font-bold text-slate-100 appearance-none focus:outline-none shadow-md cursor-pointer"
             style={{
               backgroundColor: 'var(--card-bg)',
               borderColor: 'var(--border-color)',
             }}
           >
-            {tabs.map((tab) => (
+            {VALID_ADMIN_TABS.map((tab) => (
               <option key={tab.id} value={tab.id} className="bg-slate-900 text-white">
                 {tab.label}
               </option>
@@ -101,10 +159,11 @@ export const AdminDashboard: React.FC = () => {
           WebkitOverflowScrolling: 'touch',
         }}
       >
-        {tabs.map((tab) => (
+        {VALID_ADMIN_TABS.map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
+            type="button"
+            onClick={() => handleTabChange(tab.id)}
             className={`flex items-center justify-center px-4 py-2.5 rounded-2xl text-xs font-bold whitespace-nowrap transition-all border shrink-0 backdrop-blur-md active:scale-95 ${
               activeTab === tab.id
                 ? 'text-white shadow-lg'
@@ -129,10 +188,10 @@ export const AdminDashboard: React.FC = () => {
       </div>
 
       {/* Active Tab Content View wrapped with TabErrorBoundary */}
-      <div className="animate-in fade-in duration-200">
-        <TabErrorBoundary tabName={activeTab}>
+      <div>
+        <TabErrorBoundary key={activeTab} tabName={activeTab}>
           {activeTab === 'overview' && (
-            <OverviewTab onNavigateTab={(targetTab) => setActiveTab(targetTab)} />
+            <OverviewTab onNavigateTab={(targetTab) => handleTabChange(targetTab)} />
           )}
           {activeTab === 'inventory' && <InventoryTab />}
           {activeTab === 'services' && <ServicesBomTab />}
