@@ -1032,6 +1032,20 @@ export const posApi = {
     return shift;
   },
 
+  updateShiftActualCash: async (shiftId: string, actualCash: number, closingNotes?: string): Promise<ClosedShift> => {
+    const res = await api.put<{ success: boolean; data: ClosedShift }>(`/pos/shifts/${shiftId}/actual-cash`, {
+      actual_cash: actualCash,
+      closing_notes: closingNotes,
+    });
+    invalidateCache('shifts');
+    invalidateCache('dashboard');
+    if (res.data?.data) {
+      appendClosedShift(res.data.data);
+      return res.data.data;
+    }
+    throw new Error('فشل تحديث النقدية الفعلية للوردية');
+  },
+
   closeShift: async (shift: ClosedShift): Promise<ClosedShift> => {
     return posApi.closeActiveShift(shift);
   },

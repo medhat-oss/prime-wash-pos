@@ -54,14 +54,9 @@ export async function purgeLegacyPwaCaches(): Promise<boolean> {
 
     // 3. Mark the purge as completed
     localStorage.setItem(NUKE_STAMP_KEY, CURRENT_NUKE_VERSION);
-    console.info('✅ [PWA Nuke] Nuclear purge complete. Version stamped:', CURRENT_NUKE_VERSION);
+    console.info('✅ [PWA Nuke] Nuclear purge complete silently in background. Version stamped:', CURRENT_NUKE_VERSION);
 
-    // 4. If legacy workers/caches were wiped, reload once to ensure pristine App Shell load
-    if (window.location && typeof window.location.reload === 'function') {
-      console.info('🔄 [PWA Nuke] Reloading cleanly for fresh Workbox service worker activation...');
-      window.location.reload();
-      return true;
-    }
+    return true;
   } catch (err) {
     console.warn('⚠️ [PWA Nuke] Unexpected error during legacy cache purge:', err);
   }

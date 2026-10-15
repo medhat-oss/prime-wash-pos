@@ -104,7 +104,7 @@ export const sendTelegramAlert = async (message: string): Promise<boolean> => {
   const chatId = settings.chat_id.trim();
 
   try {
-    // 1. Try secure edge proxy endpoint first (token hidden from client URL params)
+    // Dispatch strictly via secure edge proxy endpoint (token hidden from client URL params)
     const proxyRes = await fetch('/api/telegram/dispatch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -119,22 +119,8 @@ export const sendTelegramAlert = async (message: string): Promise<boolean> => {
       return true;
     }
 
-    // 2. Direct fallback (if proxy is unavailable)
-    const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-        parse_mode: 'HTML',
-      }),
-    });
-
-    const data = await response.json().catch(() => null);
-    return Boolean(data?.ok);
+    console.warn('[Telegram Dispatch] Edge proxy rejected notification dispatch');
+    return false;
   } catch (err) {
     console.warn('Telegram alert dispatch encountered network issue (silently bypassed):', err);
     return false;
@@ -295,7 +281,7 @@ export const sendTestTelegramNotification = async (
 التاريخ والوقت: ${time}`;
 
   try {
-    // 1. Try secure edge proxy endpoint first
+    // Dispatch strictly via secure edge proxy endpoint
     const proxyRes = await fetch('/api/telegram/dispatch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -316,25 +302,9 @@ export const sendTestTelegramNotification = async (
       }
     }
 
-    // 2. Direct fallback
-    const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: 'HTML',
-      }),
-    });
-
-    const data = await res.json().catch(() => null);
-    if (data?.ok) {
-      return { success: true, message: 'تم إرسال الإشعار التجريبي بنجاح إلى التليجرام!' };
-    }
     return {
       success: false,
-      message: `فشل الإرسال من خوادم تليجرام: ${data?.description || 'رمز Token أو Chat ID غير صحيح'}`,
+      message: 'تعذر الاتصال بخادم إرسال الإشعارات. يرجى التأكد من تشغيل الخادم السحابي وصحة الرمز.',
     };
   } catch (err: any) {
     return {

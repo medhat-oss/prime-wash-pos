@@ -510,6 +510,12 @@ export const ActiveShiftTab: React.FC = () => {
         <ClosedShiftDetailsModal
           shift={selectedShiftForDetails}
           onClose={() => setSelectedShiftForDetails(null)}
+          onShiftUpdated={(updated) => {
+            setSelectedShiftForDetails(updated);
+            setClosedShifts((prev) =>
+              prev.map((s) => (s.id === updated.id ? { ...s, ...updated } : s))
+            );
+          }}
         />
       )}
 

@@ -26,7 +26,6 @@ function getAllowedOrigin(requestOrigin?: string | null): string {
     const isLocalhost = (host === 'localhost' || host === '127.0.0.1') && (!port || ['5173', '3000', '4173', '8788'].includes(port));
     const isExactPrimeWash =
       host === 'prime-wash-pos.pages.dev' ||
-      host.endsWith('.prime-wash-pos.pages.dev') ||
       host === 'primewash.eg' ||
       host === 'www.primewash.eg';
 
@@ -685,15 +684,78 @@ export async function onRequest(context: any): Promise<Response> {
       });
     }
 
+    // PUT /api/pos/shifts/:id/actual-cash (Admin Edit Closed Shift Cash)
+    if (routeArray[0] === 'pos' && routeArray[1] === 'shifts' && routeArray[3] === 'actual-cash' && method === 'PUT') {
+      if (!(await verifyAdminPinHeader(request, sql))) {
+        return errorResponse('غير مصرح بالعملية. يرجى إدخال رمز PIN الإدارة', 403, requestOrigin);
+      }
+      const shiftId = String(routeArray[2] || '');
+      const body = await request.json().catch(() => ({}));
+
+      if (body.actual_cash === undefined || body.actual_cash === null || isNaN(Number(body.actual_cash))) {
+        return errorResponse('يرجى تحديد المبلغ النقدي الفعلي بدقة', 400, requestOrigin);
+      }
+
+      const existingRows = await sql`
+        SELECT id, expected_cash::float AS expected_cash, actual_cash::float AS actual_cash, closing_notes 
+        FROM shifts 
+        WHERE id::text = ${shiftId} OR shift_code = ${shiftId}
+        LIMIT 1
+      `;
+
+      if (!existingRows || existingRows.length === 0) {
+        return errorResponse('الوردية المطلوبة غير موجودة في السجلات', 404, requestOrigin);
+      }
+
+      const existingShift = existingRows[0];
+      const newActualCash = Number(Number(body.actual_cash).toFixed(2));
+      const expectedCash = Number(existingShift.expected_cash) || 0;
+      const newVariance = Number((newActualCash - expectedCash).toFixed(2));
+      const newNotes = body.closing_notes ? String(body.closing_notes).trim() : null;
+
+      const updatedRows = await sql`
+        UPDATE shifts
+        SET 
+          actual_cash = ${newActualCash},
+          variance = ${newVariance},
+          closing_notes = CASE 
+            WHEN ${newNotes}::text IS NOT NULL AND ${newNotes}::text != '' THEN
+              CASE 
+                WHEN closing_notes IS NULL OR closing_notes = '' THEN ${newNotes}
+                ELSE closing_notes || ${' | ' + newNotes}
+              END
+            ELSE closing_notes
+          END,
+          updated_at = NOW()
+        WHERE id::text = ${existingShift.id}
+        RETURNING 
+          id, shift_code, cashier_id, cashier_name,
+          COALESCE(cashier_role, 'كاشير واستقبال') AS cashier_role,
+          shift_start, shift_end, opening_cash::float AS opening_cash,
+          gross_sales::float AS gross_sales, cash_sales::float AS cash_sales,
+          card_sales::float AS card_sales, transfer_sales::float AS transfer_sales,
+          total_orders::int AS total_orders, expected_cash::float AS expected_cash,
+          actual_cash::float AS actual_cash, variance::float AS variance,
+          status, closing_notes, approved_by, is_end_of_day, active_workers_breakdown,
+          created_at, updated_at
+      `;
+
+      return jsonResponse({
+        success: true,
+        message: 'تم تحديث النقدية الفعلية وإعادة احتساب الفارق بنجاح',
+        data: updatedRows[0],
+      }, 200, requestOrigin);
+    }
+
     // DELETE /api/pos/shifts/:id
     if (routeArray[0] === 'pos' && routeArray[1] === 'shifts' && method === 'DELETE') {
       if (!(await verifyAdminPinHeader(request, sql))) {
-        return errorResponse('غير مصرح بالعملية. يرجى إدخال رمز PIN الإدارة', 403);
+        return errorResponse('غير مصرح بالعملية. يرجى إدخال رمز PIN الإدارة', 403, requestOrigin);
       }
       const shiftId = String(routeArray[2] || '');
       await sql`UPDATE orders SET shift_id = NULL WHERE shift_id::text = ${shiftId}`;
       await sql`DELETE FROM shifts WHERE id::text = ${shiftId} OR shift_code = ${shiftId}`;
-      return jsonResponse({ success: true, message: 'تم حذف سجل الوردية بنجاح' });
+      return jsonResponse({ success: true, message: 'تم حذف سجل الوردية بنجاح' }, 200, requestOrigin);
     }
 
     // ==========================================
@@ -1690,7 +1752,6 @@ export async function onRequest(context: any): Promise<Response> {
         `;
 
         const isMatch = (systemAdminPin && safeConstantTimeEquals(pin, systemAdminPin)) || owners.some((o: any) => safeConstantTimeEquals(pin, String(o.pin_code || '').trim()));
-        console.log('[Verify-PIN]', { matched: isMatch });
 
         if (isMatch) {
           return jsonResponse({ success: true, valid: true, message: 'رمز PIN صحيح' }, 200, requestOrigin);
@@ -2679,7 +2740,7 @@ export async function onRequest(context: any): Promise<Response> {
     // PUT /api/settings/pos & POST /api/settings/pos
     if ((path === 'settings/pos' || path === 'settings/appearance') && (method === 'PUT' || method === 'POST')) {
       if (!(await verifyAdminPinHeader(request, sql))) {
-        return errorResponse('غير مصرح بالعملية. يرجى إدخال رمز PIN الإدارة', 403);
+        return errorResponse('غير مصرح بالعملية. يرجى إدخال رمز PIN الإدارة', 403, requestOrigin);
       }
       const body = await request.json().catch(() => ({}));
       const existing = await sql`SELECT id FROM system_settings LIMIT 1`;

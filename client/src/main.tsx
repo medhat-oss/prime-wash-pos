@@ -16,22 +16,14 @@ if (typeof window !== 'undefined') {
     console.warn('⚠️ [Global Window Error]:', event.message, event.error);
   });
 
-  // Execute one-time nuclear legacy PWA purge then initialize Workbox Service Worker
+  // Execute background legacy PWA purge and initialize Workbox Service Worker seamlessly
   purgeLegacyPwaCaches()
-    .then((reloaded) => {
-      if (!reloaded) {
-        try {
-          setupPwa();
-        } catch (err) {
-          console.warn('⚠️ [PWA Setup Error]:', err);
-        }
-      }
-    })
-    .catch((err) => {
-      console.warn('⚠️ [PWA Purge Error]:', err);
+    .finally(() => {
       try {
         setupPwa();
-      } catch {}
+      } catch (err) {
+        console.warn('⚠️ [PWA Setup Error]:', err);
+      }
     });
 }
 
